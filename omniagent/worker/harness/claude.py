@@ -118,11 +118,23 @@ def _build_mcp_server(
                     tool_snapshot=tool_snapshot,
                     tool_executor=tool_executor,
                 )
-                await emit_event({"type": "tool_result", "tool": "execute_python", "success": True})
+                await emit_event(
+                    {
+                        "type": "tool_result",
+                        "tool": "execute_python",
+                        "success": True,
+                        "output": result,
+                    }
+                )
                 return [TextContent(type="text", text=json.dumps(result))]
             except Exception as exc:
                 await emit_event(
-                    {"type": "tool_result", "tool": "execute_python", "success": False}
+                    {
+                        "type": "tool_result",
+                        "tool": "execute_python",
+                        "success": False,
+                        "error": str(exc),
+                    }
                 )
                 return [TextContent(type="text", text=json.dumps({"error": str(exc)}))]
 

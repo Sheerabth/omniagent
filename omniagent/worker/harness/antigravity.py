@@ -99,11 +99,23 @@ class AntigravityAdapter(HarnessAdapter):
             )
             try:
                 result = await inner(code=code, observation=observation)
-                await emit_event({"type": "tool_result", "tool": "execute_python", "success": True})
-                return result
-            except Exception:
                 await emit_event(
-                    {"type": "tool_result", "tool": "execute_python", "success": False}
+                    {
+                        "type": "tool_result",
+                        "tool": "execute_python",
+                        "success": True,
+                        "output": result,
+                    }
+                )
+                return result
+            except Exception as exc:
+                await emit_event(
+                    {
+                        "type": "tool_result",
+                        "tool": "execute_python",
+                        "success": False,
+                        "error": str(exc),
+                    }
                 )
                 raise
 
