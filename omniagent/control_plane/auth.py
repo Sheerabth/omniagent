@@ -46,9 +46,10 @@ async def _resolve_key(key: str) -> KeyType:
 
 
 async def require_any(request: Request, api_key: str | None = Security(_header_scheme)) -> KeyType:
-    if not api_key:
+    key = api_key or request.query_params.get("key")
+    if not key:
         raise HTTPException(status_code=401, detail="X-OmniAgent-Key header missing")
-    return await _resolve_key(api_key)
+    return await _resolve_key(key)
 
 
 async def require_worker(request: Request, api_key: str | None = Security(_header_scheme)) -> None:

@@ -6,6 +6,7 @@ import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse
 
 from omniagent.control_plane import db, queue as q
 from omniagent.control_plane.auth import require_any
@@ -60,6 +61,12 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="OmniAgent Control Plane", lifespan=lifespan)
+
+_UI_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "ui")
+
+@app.get("/", include_in_schema=False)
+async def ui():
+    return FileResponse(os.path.join(_UI_DIR, "index.html"))
 
 app.include_router(tools.router)
 app.include_router(skills.router)
