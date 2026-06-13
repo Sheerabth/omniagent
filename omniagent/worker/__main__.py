@@ -13,12 +13,13 @@ async def main() -> None:
         logger.error("DATABASE_URL not set")
         sys.exit(1)
 
+    from procrastinate.worker import Worker
     from omniagent.worker.job import app, run_agent_job  # noqa: F401 — registers task
 
     logger.info("Worker starting, polling queue 'default'")
     async with app.open_async():
-        worker = app.Worker(queues=["default"])
-        await worker.run_async()
+        worker = Worker(app, queues=["default"])
+        await worker.run()
 
 
 if __name__ == "__main__":

@@ -4,6 +4,8 @@ Key types:
   worker  — matches OMNIAGENT_WORKER_SECRET env var directly
   client  — argon2 hash in client_keys table
   service — argon2 hash in service_keys table
+
+Key prefix (first 8 chars) is stored alongside hash to avoid O(n) argon2 scan.
 """
 import os
 from typing import Literal
@@ -24,16 +26,17 @@ async def _resolve_key(key: str) -> KeyType:
     if worker_secret and key == worker_secret:
         return "worker"
 
+    prefix = key[:8]
     async with get_conn() as conn:
         rows = await conn.execute(
-            "SELECT key_hash FROM client_keys", ()
+            "SELECT key_hash FROM client_keys WHERE key_prefix = %s", (prefix,)
         )
         for row in await rows.fetchall():
             if verify_key(key, row["key_hash"]):
                 return "client"
 
         rows = await conn.execute(
-            "SELECT key_hash FROM service_keys", ()
+            "SELECT key_hash FROM service_keys WHERE key_prefix = %s", (prefix,)
         )
         for row in await rows.fetchall():
             if verify_key(key, row["key_hash"]):

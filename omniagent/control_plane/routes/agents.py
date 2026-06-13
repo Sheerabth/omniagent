@@ -31,6 +31,12 @@ async def create_agent(body: AgentCreate, _=Depends(require_any)):
             """
             INSERT INTO agents (name, harness, skill_names, system_prompt, use_monty)
             VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (name) DO UPDATE
+              SET harness = EXCLUDED.harness,
+                  skill_names = EXCLUDED.skill_names,
+                  system_prompt = EXCLUDED.system_prompt,
+                  use_monty = EXCLUDED.use_monty,
+                  updated_at = NOW()
             RETURNING *
             """,
             (body.name, body.harness, body.skill_names, body.system_prompt, body.use_monty),

@@ -6,6 +6,7 @@ import uuid
 
 import psycopg
 from fastapi import APIRouter, Depends, HTTPException
+from psycopg import sql as pgsql
 from sse_starlette.sse import EventSourceResponse
 
 from omniagent.control_plane.auth import require_any
@@ -39,7 +40,7 @@ async def stream_session(session_id: uuid.UUID, _=Depends(require_any)):
         channel = f"session_{session_id}"
         try:
             async with await psycopg.AsyncConnection.connect(dsn, autocommit=True) as listen_conn:
-                await listen_conn.execute(f"LISTEN {channel}")
+                await listen_conn.execute(pgsql.SQL("LISTEN {}").format(pgsql.Identifier(channel)))
                 async for notify in listen_conn.notifies():
                     try:
                         payload = json.loads(notify.payload)

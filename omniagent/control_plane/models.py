@@ -145,6 +145,7 @@ class ToolExecuteRequest(BaseModel):
     tool_name: str
     input: dict[str, Any]
     session_id: uuid.UUID
+    harness: str = "unknown"
 
 
 class ToolExecuteResponse(BaseModel):

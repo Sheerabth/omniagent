@@ -27,6 +27,11 @@ async def create_skill(body: SkillCreate, _=Depends(require_any)):
             """
             INSERT INTO skills (name, tool_names, instructions, system_prompt)
             VALUES (%s, %s, %s, %s)
+            ON CONFLICT (name) DO UPDATE
+              SET tool_names = EXCLUDED.tool_names,
+                  instructions = EXCLUDED.instructions,
+                  system_prompt = EXCLUDED.system_prompt,
+                  updated_at = NOW()
             RETURNING *
             """,
             (body.name, body.tool_names, body.instructions, body.system_prompt),

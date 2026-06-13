@@ -36,7 +36,7 @@ async def run_monty_code(
 
     monty = monty_lib.Monty(code)
     # run_async returns an awaitable when external_functions are async-capable
-    result = await asyncio.get_event_loop().run_in_executor(
+    result = await asyncio.get_running_loop().run_in_executor(
         None,
         lambda: monty.run(external_functions=external_fns),
     )

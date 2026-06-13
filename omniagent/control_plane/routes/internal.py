@@ -40,7 +40,7 @@ async def execute_tool_endpoint(body: ToolExecuteRequest, _=Depends(require_work
                 "tool_name": body.tool_name,
                 "input": body.input,
                 "output": output,
-                "harness": "unknown",
+                "harness": body.harness,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "success": True,
                 "error": None,
@@ -95,10 +95,9 @@ async def post_session_event(
 
 
 async def _pg_notify(session_id: uuid.UUID, payload: dict) -> None:
-    import json as _json
     channel = f"session_{session_id}"
     async with get_conn() as conn:
         await conn.execute(
-            f"SELECT pg_notify('{channel}', %s)",
-            (_json.dumps(payload),),
+            "SELECT pg_notify(%s, %s)",
+            (channel, json.dumps(payload)),
         )

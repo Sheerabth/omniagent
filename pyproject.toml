@@ -11,7 +11,7 @@ dependencies = [
     "psycopg-pool",
 
     # job queue
-    "procrastinate[aiopg]",
+    "procrastinate",
 
     # tool layer
     "pydantic",
@@ -21,6 +21,7 @@ dependencies = [
     # agent harnesses
     "claude-agent-sdk",
     "google-antigravity",
+    "mcp",
 
     # crypto
     "cryptography",

@@ -42,15 +42,13 @@ async def execute_tool(tool_name: str, input_data: dict[str, Any]) -> dict[str, 
 
     async with _pool_lock:
         pool = list(_namespace_pool.get(namespace, []))
-
-    if not pool:
-        raise RuntimeError(f"tool_unavailable: no connections for namespace '{namespace}'")
-
-    _rr[namespace] = (_rr.get(namespace, -1) + 1) % len(pool)
-    ws = pool[_rr[namespace]]
+        if not pool:
+            raise RuntimeError(f"tool_unavailable: no connections for namespace '{namespace}'")
+        _rr[namespace] = (_rr.get(namespace, -1) + 1) % len(pool)
+        ws = pool[_rr[namespace]]
 
     request_id = str(uuid.uuid4())
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     fut: asyncio.Future[dict[str, Any]] = loop.create_future()
 
     async with _pending_lock:

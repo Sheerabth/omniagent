@@ -1,4 +1,5 @@
 """FastAPI control plane."""
+import asyncio
 import json
 import logging
 import os
@@ -19,7 +20,6 @@ logger = logging.getLogger(__name__)
 
 
 async def _mark_session_failed(session_id: str) -> None:
-    from omniagent.control_plane.routes.internal import _pg_notify
     import uuid
     sid = uuid.UUID(session_id)
     async with db.get_conn() as conn:
@@ -27,7 +27,7 @@ async def _mark_session_failed(session_id: str) -> None:
             "UPDATE sessions SET status='failed', updated_at=NOW() WHERE id=%s AND status='running'",
             (sid,),
         )
-    await _pg_notify(sid, {"type": "error", "reason": "job failed or timed out"})
+    await internal._pg_notify(sid, {"type": "error", "reason": "job failed or timed out"})
 
 
 async def _reconcile_stuck_sessions() -> None:
@@ -83,7 +83,9 @@ async def ws_endpoint(websocket: WebSocket):
         from omniagent.control_plane.db import get_conn
         from omniagent.control_plane.secrets import verify_key
         async with get_conn() as conn:
-            rows = await conn.execute("SELECT key_hash FROM service_keys")
+            rows = await conn.execute(
+                "SELECT key_hash FROM service_keys WHERE key_prefix = %s", (key[:8],)
+            )
             valid = False
             for row in await rows.fetchall():
                 if verify_key(key, row["key_hash"]):

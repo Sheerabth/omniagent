@@ -7,26 +7,25 @@ from typing import Any
 
 import httpx
 import procrastinate
-from procrastinate.contrib.aiopg import AiopgConnector
+from procrastinate import PsycopgConnector
 
 logger = logging.getLogger(__name__)
 
 CONTROL_PLANE = os.environ.get("OMNIAGENT_CONTROL_PLANE", "http://localhost:8080")
 WORKER_SECRET = os.environ.get("OMNIAGENT_WORKER_SECRET", "")
 
-# Shared app instance — used both by worker (to run jobs) and control plane (to defer jobs)
-app = procrastinate.App(connector=AiopgConnector(dsn=os.environ.get("DATABASE_URL", "")))
+app = procrastinate.App(connector=PsycopgConnector(conninfo=os.environ.get("DATABASE_URL", "")))
 
 
 def _headers() -> dict[str, str]:
     return {"X-OmniAgent-Key": WORKER_SECRET}
 
 
-async def _tool_executor(session_id: str, tool_name: str, input_data: dict) -> dict:
+async def _tool_executor(session_id: str, tool_name: str, input_data: dict, harness: str = "unknown") -> dict:
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             f"{CONTROL_PLANE}/internal/tools/execute",
-            json={"tool_name": tool_name, "input": input_data, "session_id": session_id},
+            json={"tool_name": tool_name, "input": input_data, "session_id": session_id, "harness": harness},
             headers=_headers(),
             timeout=35,
         )
@@ -90,7 +89,7 @@ async def run_agent_job(session_id: str, payload: str) -> None:
     system_prompt = _build_system_prompt(agent_config)
 
     async def tool_exec(tool_name: str, input_data: dict) -> dict:
-        return await _tool_executor(session_id, tool_name, input_data)
+        return await _tool_executor(session_id, tool_name, input_data, harness)
 
     async def emit(event: dict) -> None:
         await _emit_event(session_id, event)
