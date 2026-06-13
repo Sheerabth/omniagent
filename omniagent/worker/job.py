@@ -1,5 +1,4 @@
 """Procrastinate worker task: run_agent_job."""
-import asyncio
 import json
 import logging
 import os
@@ -7,6 +6,8 @@ from typing import Any
 
 import httpx
 import procrastinate
+import psycopg
+import psycopg.rows
 from procrastinate import PsycopgConnector
 
 logger = logging.getLogger(__name__)
@@ -16,56 +17,88 @@ WORKER_SECRET = os.environ.get("OMNIAGENT_WORKER_SECRET", "")
 
 app = procrastinate.App(connector=PsycopgConnector(conninfo=os.environ.get("DATABASE_URL", "")))
 
+_http_client: httpx.AsyncClient | None = None
+
+
+def _get_http_client() -> httpx.AsyncClient:
+    global _http_client
+    if _http_client is None:
+        _http_client = httpx.AsyncClient()
+    return _http_client
+
 
 def _headers() -> dict[str, str]:
     return {"X-OmniAgent-Key": WORKER_SECRET}
 
 
-async def _tool_executor(session_id: str, tool_name: str, input_data: dict, harness: str = "unknown") -> dict:
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{CONTROL_PLANE}/internal/tools/execute",
-            json={"tool_name": tool_name, "input": input_data, "session_id": session_id, "harness": harness},
-            headers=_headers(),
-            timeout=35,
+async def _fetch_tool_snapshot(session_id: str) -> dict[str, Any]:
+    async with await psycopg.AsyncConnection.connect(
+        os.environ.get("DATABASE_URL", ""),
+        row_factory=psycopg.rows.dict_row,
+    ) as conn:
+        rows = await conn.execute(
+            "SELECT tool_snapshot FROM sessions WHERE id = %s",
+            (session_id,),
         )
-    if resp.status_code == 503:
+        row = await rows.fetchone()
+    if not row:
+        raise RuntimeError(f"session_not_found:{session_id}")
+    return row["tool_snapshot"] or {}
+
+
+async def _tool_executor(
+    session_id: str,
+    tool_name: str,
+    input_data: dict,
+    tool_snapshot: dict[str, Any],
+    harness: str = "unknown",
+) -> dict:
+    tool = tool_snapshot.get(tool_name)
+    if not tool:
+        raise RuntimeError(f"tool_not_found:{tool_name}")
+
+    execute_url = tool.get("execute_url", "")
+    if not execute_url:
+        raise RuntimeError(f"tool_no_execute_url:{tool_name}")
+
+    local_name = tool_name.split(".", 1)[-1] if "." in tool_name else tool_name
+
+    resp = await _get_http_client().post(
+        execute_url,
+        json={"tool": local_name, "input": input_data},
+        timeout=35,
+    )
+
+    if resp.status_code == 404:
         raise RuntimeError(f"tool_unavailable:{tool_name}")
-    if resp.status_code == 504:
-        raise RuntimeError(f"tool_timeout:{tool_name}")
     resp.raise_for_status()
     return resp.json()["output"]
 
 
 async def _emit_event(session_id: str, event: dict) -> None:
     try:
-        async with httpx.AsyncClient() as client:
-            await client.post(
-                f"{CONTROL_PLANE}/internal/sessions/{session_id}/event",
-                json=event,
-                headers=_headers(),
-                timeout=5,
-            )
+        await _get_http_client().post(
+            f"{CONTROL_PLANE}/internal/sessions/{session_id}/event",
+            json=event,
+            headers=_headers(),
+            timeout=5,
+        )
     except Exception as exc:
         logger.warning("emit_event failed: %s", exc)
 
 
-def _build_system_prompt(agent_config: dict[str, Any]) -> str:
+def _build_system_prompt(agent_config: dict[str, Any], tool_snapshot: dict[str, Any]) -> str:
     lines = [agent_config.get("system_prompt", "")]
 
-    skills = agent_config.get("skills", [])
-    if skills:
-        lines.append("\nSkills:")
-        for skill in skills:
-            if skill.get("system_prompt"):
-                lines.append(skill["system_prompt"])
-            if skill.get("instructions"):
-                lines.append(skill["instructions"])
+    for skill in agent_config.get("skills", []):
+        if skill.get("system_prompt"):
+            lines.append(skill["system_prompt"])
+        if skill.get("instructions"):
+            lines.append(skill["instructions"])
 
-    snapshot = agent_config.get("tool_snapshot", {})
-    if snapshot:
+    if tool_snapshot:
         lines.append("\nAvailable tools:")
-        for tool_name, schema in snapshot.items():
+        for tool_name, schema in tool_snapshot.items():
             lines.append(f"- {tool_name}: {schema.get('description', '')}")
             if schema.get("input_schema"):
                 lines.append(f"  Input schema: {json.dumps(schema['input_schema'])}")
@@ -80,16 +113,26 @@ async def run_agent_job(session_id: str, payload: str) -> None:
     data = json.loads(payload)
     agent_config = data["agent_config"]
     history = data.get("history", [])
-    llm_api_key = data.get("llm_api_key")
 
     harness = agent_config["harness"]
     use_monty = agent_config.get("use_monty", False)
-    tool_snapshot = agent_config.get("tool_snapshot", {})
 
-    system_prompt = _build_system_prompt(agent_config)
+    tool_snapshot = await _fetch_tool_snapshot(session_id)
+    system_prompt = _build_system_prompt(agent_config, tool_snapshot)
+
+    llm_api_key = os.environ.get(f"OMNIAGENT_{harness.upper()}_API_KEY")
 
     async def tool_exec(tool_name: str, input_data: dict) -> dict:
-        return await _tool_executor(session_id, tool_name, input_data, harness)
+        output = await _tool_executor(session_id, tool_name, input_data, tool_snapshot, harness)
+        await _emit_event(session_id, {
+            "type": "tool_result",
+            "tool": tool_name,
+            "success": True,
+            "input": input_data,
+            "output": output,
+            "harness": harness,
+        })
+        return output
 
     async def emit(event: dict) -> None:
         await _emit_event(session_id, event)
@@ -113,16 +156,14 @@ async def run_agent_job(session_id: str, payload: str) -> None:
             tool_snapshot=tool_snapshot,
         )
 
-        async with httpx.AsyncClient() as client:
-            await client.post(
-                f"{CONTROL_PLANE}/internal/sessions/{session_id}/result",
-                json={"result": result},
-                headers=_headers(),
-                timeout=10,
-            )
+        await _get_http_client().post(
+            f"{CONTROL_PLANE}/internal/sessions/{session_id}/result",
+            json={"result": result},
+            headers=_headers(),
+            timeout=10,
+        )
 
     except Exception as exc:
         logger.exception("run_agent_job failed for session %s", session_id)
-        # emit(type=error) → control plane marks session "failed" + PG_NOTIFY
         await emit({"type": "error", "reason": str(exc)})
-        raise  # let Procrastinate mark job as FAILED in its own table
+        raise

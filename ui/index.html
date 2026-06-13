@@ -446,6 +446,7 @@ let chatSessionId = null;
 let chatSSE = null;
 let chatBusy = false;
 let thinkingEl = null;
+let chatRunId = 0;
 
 function renderChatAgents() {
   const sel = document.getElementById('chat-agent-select');
@@ -492,6 +493,7 @@ async function chatSend() {
   document.getElementById('chat-send').disabled = true;
 
   appendMsg('user', text);
+  chatRunId++;
   thinkingEl = appendThinking();
 
   try {
@@ -509,8 +511,10 @@ function streamSession(sessionId) {
   if (chatSSE) chatSSE.close();
   const url = '/sessions/' + sessionId + '/stream';
   chatSSE = new EventSource(url + '?key=' + encodeURIComponent(API_KEY));
+  const myRunId = chatRunId;
 
   chatSSE.onmessage = async (e) => {
+    if (chatRunId !== myRunId) return; // stale run, ignore
     const ev = JSON.parse(e.data);
 
     if (ev.type === 'tool_call') {
@@ -522,12 +526,12 @@ function streamSession(sessionId) {
       chatSSE.close();
       chatBusy = false;
       document.getElementById('chat-send').disabled = false;
-      if (ev.result) {
+      if (ev.result != null) {
         appendMsg('assistant', ev.result);
       } else {
         try {
           const status = await api('GET', '/sessions/' + sessionId + '/status');
-          if (status.result) appendMsg('assistant', status.result);
+          if (status.result != null) appendMsg('assistant', status.result);
         } catch(e) { appendMsg('assistant', '⚠ could not fetch result'); }
       }
     } else if (ev.type === 'error') {
@@ -573,8 +577,7 @@ function removeThinking() {
 
 function appendToolEvent(toolName, status, isErr) {
   const msgs = document.getElementById('chat-messages');
-  // reuse existing row for same tool if status update
-  const existing = msgs.querySelector(`.tool-event[data-tool="${CSS.escape(toolName)}"]`);
+  const existing = msgs.querySelector(`.tool-event[data-tool="${CSS.escape(toolName)}"][data-run="${chatRunId}"]`);
   if (existing && status !== 'calling…') {
     existing.className = 'tool-event ' + (isErr ? 'err' : 'ok');
     existing.querySelector('.tool-icon').textContent = isErr ? '✕' : '✓';
@@ -584,6 +587,7 @@ function appendToolEvent(toolName, status, isErr) {
   const div = document.createElement('div');
   div.className = 'tool-event';
   div.dataset.tool = toolName;
+  div.dataset.run = chatRunId;
   div.innerHTML = `<div class="tool-icon">⚙</div><span class="tool-name">${escHtml(toolName)}</span><span class="tool-status" style="color:#555">${status}</span>`;
   msgs.appendChild(div);
   msgs.scrollTop = msgs.scrollHeight;

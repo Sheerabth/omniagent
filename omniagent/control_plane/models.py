@@ -17,6 +17,7 @@ class ToolRecord(BaseModel):
     description: str
     input_schema: dict[str, Any]
     output_schema: dict[str, Any]
+    execute_url: str = ""
     available: bool
 
 
@@ -161,5 +162,8 @@ class SessionEventRequest(BaseModel):
     content: str | None = None
     tool: str | None = None
     input: dict[str, Any] | None = None
+    output: dict[str, Any] | None = None
     success: bool | None = None
     reason: str | None = None
+    harness: str | None = None
+    error: str | None = None

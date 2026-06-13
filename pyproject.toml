@@ -35,6 +35,9 @@ dependencies = [
 
     # sse
     "sse-starlette",
+
+    # pub/sub
+    "redis[asyncio]",
 ]
 
 [project.optional-dependencies]

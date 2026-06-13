@@ -65,7 +65,6 @@ class AntigravityAdapter(HarnessAdapter):
             response = await agent.chat(latest_user)
             result = await _extract_text(response)
 
-        await emit_event({"type": "complete", "result": result})
         return result
 
     def _build_tool_callables(
@@ -103,11 +102,10 @@ def _make_tool_fn(
         await emit_event({"type": "tool_call", "tool": tool_name, "input": input_data})
         try:
             output = await tool_executor(tool_name, input_data)
-            await emit_event({"type": "tool_result", "tool": tool_name, "success": True})
             return json.dumps(output)
         except Exception as exc:
             err = str(exc)
-            await emit_event({"type": "tool_result", "tool": tool_name, "success": False})
+            await emit_event({"type": "tool_result", "tool": tool_name, "success": False, "error": err})
             return json.dumps({"error": err})
 
     params = [

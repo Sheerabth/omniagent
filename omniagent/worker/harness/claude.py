@@ -58,7 +58,6 @@ class ClaudeAdapter(HarnessAdapter):
                         if getattr(block, "type", None) == "text":
                             final_text = block.text
 
-        await emit_event({"type": "complete", "result": final_text})
         return final_text
 
 

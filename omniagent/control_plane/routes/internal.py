@@ -1,4 +1,4 @@
-"""Internal endpoints: worker + service only (worker key required)."""
+"""Internal endpoints: worker only (worker key required)."""
 import json
 import uuid
 from datetime import datetime, timezone
@@ -7,50 +7,10 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from omniagent.control_plane.auth import require_worker
 from omniagent.control_plane.db import get_conn
-from omniagent.control_plane.models import (
-    SessionEventRequest,
-    SessionResultRequest,
-    ToolExecuteRequest,
-    ToolExecuteResponse,
-)
-from omniagent.control_plane.ws import execute_tool
+from omniagent.control_plane.models import SessionEventRequest, SessionResultRequest
+from omniagent.control_plane.redis_client import get_redis
 
 router = APIRouter(prefix="/internal", tags=["internal"])
-
-
-@router.post("/tools/execute", response_model=ToolExecuteResponse)
-async def execute_tool_endpoint(body: ToolExecuteRequest, _=Depends(require_worker)):
-    try:
-        output = await execute_tool(body.tool_name, body.input)
-    except RuntimeError as e:
-        err = str(e)
-        if err.startswith("tool_unavailable"):
-            raise HTTPException(503, detail={"error": "tool_unavailable", "tool": body.tool_name})
-        if err.startswith("tool_timeout"):
-            raise HTTPException(504, detail={"error": "tool_timeout", "tool": body.tool_name})
-        raise HTTPException(500, detail=str(e))
-
-    # Log ToolCallEntry to session
-    async with get_conn() as conn:
-        rows = await conn.execute("SELECT tool_calls FROM sessions WHERE id = %s", (body.session_id,))
-        sess = await rows.fetchone()
-        if sess:
-            tool_calls = sess["tool_calls"] or []
-            tool_calls.append({
-                "tool_name": body.tool_name,
-                "input": body.input,
-                "output": output,
-                "harness": body.harness,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "success": True,
-                "error": None,
-            })
-            await conn.execute(
-                "UPDATE sessions SET tool_calls = %s WHERE id = %s",
-                (json.dumps(tool_calls), body.session_id),
-            )
-
-    return ToolExecuteResponse(output=output)
 
 
 @router.post("/sessions/{session_id}/result", status_code=204)
@@ -75,7 +35,7 @@ async def post_session_result(
             (json.dumps(messages), session_id),
         )
 
-    await _pg_notify(session_id, {"type": "complete", "result": body.result})
+    await _publish(session_id, {"type": "complete", "result": body.result})
 
 
 @router.post("/sessions/{session_id}/event", status_code=204)
@@ -84,20 +44,40 @@ async def post_session_event(
     body: SessionEventRequest,
     _=Depends(require_worker),
 ):
-    # Worker emitting error → mark session failed before notifying SSE subscribers
     if body.type == "error":
         async with get_conn() as conn:
             await conn.execute(
                 "UPDATE sessions SET status='failed', updated_at=NOW() WHERE id=%s AND status='running'",
                 (session_id,),
             )
-    await _pg_notify(session_id, body.model_dump(exclude_none=True))
+
+    if body.type == "tool_result":
+        event_data = body.model_dump(exclude_none=True)
+        if event_data.get("input") is not None and event_data.get("output") is not None:
+            async with get_conn() as conn:
+                rows = await conn.execute(
+                    "SELECT tool_calls FROM sessions WHERE id = %s", (session_id,)
+                )
+                sess = await rows.fetchone()
+                if sess:
+                    tool_calls = sess["tool_calls"] or []
+                    tool_calls.append({
+                        "tool_name": event_data.get("tool"),
+                        "input": event_data.get("input"),
+                        "output": event_data.get("output"),
+                        "harness": event_data.get("harness"),
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "success": event_data.get("success", True),
+                        "error": event_data.get("error"),
+                    })
+                    await conn.execute(
+                        "UPDATE sessions SET tool_calls = %s WHERE id = %s",
+                        (json.dumps(tool_calls), session_id),
+                    )
+
+    await _publish(session_id, body.model_dump(exclude_none=True))
 
 
-async def _pg_notify(session_id: uuid.UUID, payload: dict) -> None:
+async def _publish(session_id: uuid.UUID, payload: dict) -> None:
     channel = f"session_{session_id}"
-    async with get_conn() as conn:
-        await conn.execute(
-            "SELECT pg_notify(%s, %s)",
-            (channel, json.dumps(payload)),
-        )
+    await get_redis().publish(channel, json.dumps(payload))

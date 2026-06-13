@@ -39,7 +39,7 @@ async def _build_tool_snapshot(conn, agent_row: dict) -> dict:
         return snapshot
 
     rows = await conn.execute(
-        "SELECT name, description, input_schema, output_schema FROM tools WHERE name = ANY(%s)",
+        "SELECT name, description, input_schema, output_schema, execute_url FROM tools WHERE name = ANY(%s)",
         (all_tool_names,),
     )
     for r in await rows.fetchall():
@@ -48,6 +48,7 @@ async def _build_tool_snapshot(conn, agent_row: dict) -> dict:
             "description": r["description"],
             "input_schema": r["input_schema"],
             "output_schema": r["output_schema"],
+            "execute_url": r["execute_url"] or "",
         }
     return snapshot
 
@@ -98,17 +99,6 @@ async def run_session(session_id: uuid.UUID, body: RunRequest, _=Depends(require
         if len(messages) > MAX_HISTORY_TURNS * 2:
             messages = messages[-(MAX_HISTORY_TURNS * 2):]
 
-        # Fetch LLM key
-        rows = await conn.execute(
-            "SELECT encrypted_key FROM llm_keys WHERE harness = %s",
-            (agent["harness"],),
-        )
-        llm_key_row = await rows.fetchone()
-        llm_api_key: str | None = None
-        if llm_key_row:
-            from omniagent.control_plane.secrets import decrypt_llm_key
-            llm_api_key = decrypt_llm_key(bytes(llm_key_row["encrypted_key"]))
-
         # Fetch skills
         skill_names = agent["skill_names"] or []
         skills = []
@@ -135,10 +125,8 @@ async def run_session(session_id: uuid.UUID, body: RunRequest, _=Depends(require
                 "system_prompt": agent["system_prompt"],
                 "skill_names": skill_names,
                 "skills": [dict(s) for s in skills],
-                "tool_snapshot": session["tool_snapshot"] or {},
                 "use_monty": agent["use_monty"],
             },
-            "llm_api_key": llm_api_key,
             "history": messages,
         }
 
