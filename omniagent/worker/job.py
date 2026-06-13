@@ -1,5 +1,6 @@
 """Procrastinate worker task: run_agent_job."""
 
+import asyncio
 import json
 import logging
 import os
@@ -19,12 +20,18 @@ WORKER_SECRET = os.environ.get("OMNIAGENT_WORKER_SECRET", "")
 app = procrastinate.App(connector=PsycopgConnector(conninfo=os.environ.get("DATABASE_URL", "")))
 
 _http_client: httpx.AsyncClient | None = None
+_http_client_loop: asyncio.AbstractEventLoop | None = None
 
 
 def _get_http_client() -> httpx.AsyncClient:
-    global _http_client
-    if _http_client is None:
+    global _http_client, _http_client_loop
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if _http_client is None or _http_client_loop is not loop:
         _http_client = httpx.AsyncClient()
+        _http_client_loop = loop
     return _http_client
 
 
@@ -32,19 +39,64 @@ def _headers() -> dict[str, str]:
     return {"X-OmniAgent-Key": WORKER_SECRET}
 
 
-async def _fetch_tool_snapshot(session_id: str) -> dict[str, Any]:
+async def _fetch_session_config(session_id: str) -> dict[str, Any]:
     async with await psycopg.AsyncConnection.connect(
         os.environ.get("DATABASE_URL", ""),
         row_factory=psycopg.rows.dict_row,
     ) as conn:
         rows = await conn.execute(
-            "SELECT tool_snapshot FROM sessions WHERE id = %s",
+            "SELECT agent_name, agent_version, skill_versions FROM sessions WHERE id = %s",
             (session_id,),
         )
-        row = await rows.fetchone()
-    if not row:
-        raise RuntimeError(f"session_not_found:{session_id}")
-    return row["tool_snapshot"] or {}
+        session = await rows.fetchone()
+        if not session:
+            raise RuntimeError(f"session_not_found:{session_id}")
+
+        agent_name = session["agent_name"]
+        agent_version = session["agent_version"]
+        skill_versions: dict[str, str] = session["skill_versions"] or {}
+
+        rows = await conn.execute(
+            "SELECT * FROM agents WHERE name = %s AND version = %s",
+            (agent_name, agent_version),
+        )
+        agent = await rows.fetchone()
+        if not agent:
+            raise RuntimeError(f"agent_version_deleted:{agent_name}:{agent_version}")
+
+        skills = []
+        all_tool_names: list[str] = []
+        for skill_name, skill_version in skill_versions.items():
+            rows = await conn.execute(
+                "SELECT * FROM skills WHERE name = %s AND version = %s",
+                (skill_name, skill_version),
+            )
+            skill = await rows.fetchone()
+            if not skill:
+                raise RuntimeError(f"skill_version_deleted:{skill_name}:{skill_version}")
+            skills.append(dict(skill))
+            all_tool_names.extend(skill["tool_names"])
+
+        tool_snapshot: dict[str, Any] = {}
+        if all_tool_names:
+            rows = await conn.execute("SELECT * FROM tools WHERE name = ANY(%s)", (all_tool_names,))
+            for tool in await rows.fetchall():
+                tool_snapshot[tool["name"]] = {
+                    "name": tool["name"],
+                    "description": tool["description"],
+                    "input_schema": tool["input_schema"],
+                    "output_schema": tool["output_schema"],
+                    "execute_url": tool["execute_url"] or "",
+                }
+
+    return {
+        "harness": agent["harness"],
+        "model": agent["model"],
+        "system_prompt": agent["system_prompt"],
+        "use_monty": agent["use_monty"],
+        "skills": skills,
+        "tool_snapshot": tool_snapshot,
+    }
 
 
 async def _tool_executor(
@@ -88,16 +140,23 @@ async def _emit_event(session_id: str, event: dict) -> None:
         logger.warning("emit_event failed: %s", exc)
 
 
-def _build_system_prompt(agent_config: dict[str, Any], tool_snapshot: dict[str, Any]) -> str:
-    lines = [agent_config.get("system_prompt", "")]
+def _safe_tool_name(name: str) -> str:
+    return name.replace(".", "__").replace("-", "_")
 
-    for skill in agent_config.get("skills", []):
+
+def _build_system_prompt(config: dict[str, Any]) -> str:
+    lines = [config.get("system_prompt", "")]
+
+    for skill in config.get("skills", []):
         if skill.get("system_prompt"):
             lines.append(skill["system_prompt"])
         if skill.get("instructions"):
             lines.append(skill["instructions"])
 
-    if tool_snapshot:
+    tool_snapshot = config.get("tool_snapshot", {})
+    use_monty = config.get("use_monty", False)
+
+    if tool_snapshot and not use_monty:
         lines.append("\nAvailable tools:")
         for tool_name, schema in tool_snapshot.items():
             lines.append(f"- {tool_name}: {schema.get('description', '')}")
@@ -106,20 +165,46 @@ def _build_system_prompt(agent_config: dict[str, Any], tool_snapshot: dict[str, 
             if schema.get("output_schema"):
                 lines.append(f"  Output schema: {json.dumps(schema['output_schema'])}")
 
+    if tool_snapshot and use_monty:
+        lines.append(
+            "\nYou have access to one tool: `execute_python`. "
+            "You MUST use it to interact with all external capabilities. "
+            "ALWAYS write a SINGLE execute_python call that does everything — fetch all data, process it, and return the final answer. "
+            "Never split work across multiple execute_python calls. "
+            "Write Python code and call the following functions (available as globals inside the sandbox):"
+        )
+        for tool_name, schema in tool_snapshot.items():
+            fn = _safe_tool_name(tool_name)
+            props = schema.get("input_schema", {}).get("properties", {})
+            params = ", ".join(f"{k}=..." for k in props if k != "observation")
+            out_schema = schema.get("output_schema") or {}
+            out_props = out_schema.get("properties", out_schema)
+            out_info = json.dumps(out_props) if out_props else "dict"
+            lines.append(f"- {fn}({params})  -> {out_info}  # {schema.get('description', '')}")
+        lines.append(
+            "\nIMPORTANT: These functions return Python dicts DIRECTLY — there is NO 'result' wrapper key. "
+            "Access fields directly, e.g.: `data = some_fn(x=1); value = data['field_name']`\n"
+            "Return a value from your code — the LAST EXPRESSION is the result. "
+            "Do NOT use print() to output results — print() returns None and the tool will return null. "
+            "Build a result variable and put it as the final line.\n"
+            "ALWAYS include both `observation` (what you're doing) and `code` (the Python). "
+            "Example: execute_python(observation='get Tokyo weather', code='result = get_weather(city=\"Tokyo\")\\nresult')"
+        )
+
     return "\n".join(lines)
 
 
 @app.task(name="run_agent_job", queue="default")
 async def run_agent_job(session_id: str, payload: str) -> None:
     data = json.loads(payload)
-    agent_config = data["agent_config"]
     history = data.get("history", [])
 
-    harness = agent_config["harness"]
-    use_monty = agent_config.get("use_monty", False)
-
-    tool_snapshot = await _fetch_tool_snapshot(session_id)
-    system_prompt = _build_system_prompt(agent_config, tool_snapshot)
+    config = await _fetch_session_config(session_id)
+    harness = config["harness"]
+    model = config["model"]
+    use_monty = config["use_monty"]
+    tool_snapshot = config["tool_snapshot"]
+    system_prompt = _build_system_prompt(config)
 
     llm_api_key = os.environ.get(f"OMNIAGENT_{harness.upper()}_API_KEY")
 
@@ -160,6 +245,7 @@ async def run_agent_job(session_id: str, payload: str) -> None:
             emit_event=emit,
             use_monty=use_monty,
             tool_snapshot=tool_snapshot,
+            model=model,
         )
 
         await _get_http_client().post(

@@ -72,11 +72,15 @@
   .msg.assistant .msg-bubble { background: #1a1a1a; color: #e0e0e0; border: 1px solid #2a2a2a; border-bottom-left-radius: 2px; }
   .msg-meta { font-size: 11px; color: #555; margin-top: 4px; padding: 0 4px; }
   .msg.user .msg-meta { text-align: right; }
-  .tool-event { align-self: flex-start; display: flex; align-items: center; gap: 8px; font-size: 12px; color: #888; padding: 4px 0; }
+  .tool-event { align-self: flex-start; display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: #888; padding: 4px 0; }
+  .tool-event-row { display: flex; align-items: center; gap: 8px; }
   .tool-event .tool-icon { width: 20px; height: 20px; border-radius: 50%; background: #1e2a1e; border: 1px solid #2a4a2a; display: flex; align-items: center; justify-content: center; font-size: 10px; flex-shrink: 0; }
   .tool-event.ok .tool-icon { background: #1e2a1e; border-color: #2a5a2a; color: #6fcf6f; }
   .tool-event.err .tool-icon { background: #2a1a1a; border-color: #5a2a2a; color: #f87171; }
   .tool-event .tool-name { color: #8ab4f8; }
+  .tool-code-toggle { background: none; border: none; color: #555; font-size: 11px; cursor: pointer; padding: 0; margin-left: 28px; }
+  .tool-code-toggle:hover { color: #aaa; }
+  .tool-code { background: #111; border: 1px solid #2a2a2a; border-radius: 4px; padding: 6px 8px; font-size: 11px; font-family: monospace; color: #aaa; white-space: pre-wrap; margin-left: 28px; max-width: 600px; max-height: 300px; overflow-y: auto; display: none; margin-top: 4px; }
   .thinking-indicator { align-self: flex-start; display: flex; align-items: center; gap: 6px; color: #555; font-size: 13px; padding: 4px 0; }
   .dots { display: flex; gap: 4px; }
   .dots span { width: 6px; height: 6px; border-radius: 50%; background: #444; animation: blink 1.2s infinite; }
@@ -131,9 +135,16 @@
   </div>
   <div class="form-col">
     <div id="skill-form" class="card" style="display:none">
-      <input type="hidden" id="skill-id">
-      <label>Name</label>
-      <input type="text" id="skill-name" placeholder="e.g. weather">
+      <div style="display:flex;gap:10px">
+        <div style="flex:1">
+          <label>Name</label>
+          <input type="text" id="skill-name" placeholder="e.g. weather">
+        </div>
+        <div style="width:110px">
+          <label>Version</label>
+          <input type="text" id="skill-version" placeholder="v1">
+        </div>
+      </div>
       <label>Instructions</label>
       <textarea id="skill-instructions" placeholder="Instructions for the agent on how to use these tools"></textarea>
       <label>System Prompt</label>
@@ -158,16 +169,29 @@
   </div>
   <div class="form-col">
     <div id="agent-form" class="card" style="display:none">
-      <input type="hidden" id="agent-id">
-      <label>Name</label>
-      <input type="text" id="agent-name" placeholder="e.g. weather-bot">
+      <div style="display:flex;gap:10px">
+        <div style="flex:1">
+          <label>Name</label>
+          <input type="text" id="agent-name" placeholder="e.g. weather-bot">
+        </div>
+        <div style="width:110px">
+          <label>Version</label>
+          <input type="text" id="agent-version" placeholder="v1">
+        </div>
+      </div>
       <label>Harness</label>
-      <select id="agent-harness">
+      <select id="agent-harness" onchange="updateModelOptions()">
         <option value="antigravity">antigravity (Gemini)</option>
         <option value="claude">claude</option>
       </select>
+      <label>Model</label>
+      <select id="agent-model"></select>
       <label>System Prompt</label>
       <textarea id="agent-system" placeholder="You are a helpful assistant."></textarea>
+      <label style="flex-direction:row;align-items:center;gap:8px;display:flex">
+        <input type="checkbox" id="agent-monty" style="width:auto;margin:0">
+        Enable Monty (Python sandbox with tool access)
+      </label>
       <label>Skills</label>
       <div id="agent-skills-checkboxes" class="checkbox-grid"></div>
       <div class="btn-row">
@@ -237,7 +261,7 @@ function toast(msg, ok = true) {
 function switchTab(tab) {
   currentTab = tab;
   document.querySelectorAll('.tab').forEach((el, i) => {
-    el.classList.toggle('active', ['tools','skills','agents'][i] === tab);
+    el.classList.toggle('active', ['tools','skills','agents','chat'][i] === tab);
   });
   document.querySelectorAll('.panel').forEach(el => el.classList.remove('active'));
   document.getElementById('panel-' + tab).classList.add('active');
@@ -285,15 +309,15 @@ function renderSkills() {
   const el = document.getElementById('skills-list');
   if (!allSkills.length) { el.innerHTML = '<p class="empty">No skills yet</p>'; return; }
   el.innerHTML = allSkills.map(s => `
-    <div class="item" onclick="editSkill('${s.id}')">
-      <div class="name">${s.name}</div>
+    <div class="item" data-name="${escHtml(s.name)}" data-version="${escHtml(s.version)}" onclick="editSkillEl(this)">
+      <div class="name">${escHtml(s.name)} <span style="color:#555;font-size:11px">${escHtml(s.version)}</span></div>
       <div class="sub">${(s.tool_names||[]).length} tools</div>
     </div>`).join('');
 }
 
 function newSkill() {
-  document.getElementById('skill-id').value = '';
   document.getElementById('skill-name').value = '';
+  document.getElementById('skill-version').value = '';
   document.getElementById('skill-instructions').value = '';
   document.getElementById('skill-system').value = '';
   document.getElementById('skill-delete-btn').style.display = 'none';
@@ -301,11 +325,11 @@ function newSkill() {
   document.getElementById('skill-form').style.display = 'block';
 }
 
-function editSkill(id) {
-  const s = allSkills.find(x => x.id === id);
+function editSkill(name, version) {
+  const s = allSkills.find(x => x.name === name && x.version === version);
   if (!s) return;
-  document.getElementById('skill-id').value = s.id;
   document.getElementById('skill-name').value = s.name;
+  document.getElementById('skill-version').value = s.version;
   document.getElementById('skill-instructions').value = s.instructions || '';
   document.getElementById('skill-system').value = s.system_prompt || '';
   document.getElementById('skill-delete-btn').style.display = 'inline-block';
@@ -332,9 +356,9 @@ function getChecked(containerId) {
 }
 
 async function saveSkill() {
-  const id = document.getElementById('skill-id').value;
   const body = {
     name: document.getElementById('skill-name').value.trim(),
+    version: document.getElementById('skill-version').value.trim() || 'v1',
     instructions: document.getElementById('skill-instructions').value.trim(),
     system_prompt: document.getElementById('skill-system').value.trim(),
     tool_names: getChecked('skill-tools-checkboxes'),
@@ -349,10 +373,11 @@ async function saveSkill() {
 }
 
 async function deleteSkill() {
-  const id = document.getElementById('skill-id').value;
-  if (!id || !confirm('Delete this skill?')) return;
+  const name = document.getElementById('skill-name').value;
+  const version = document.getElementById('skill-version').value;
+  if (!name || !version || !confirm('Delete this skill version?')) return;
   try {
-    await api('DELETE', '/skills/' + id);
+    await api('DELETE', `/skills/${encodeURIComponent(name)}/${encodeURIComponent(version)}`);
     toast('Skill deleted');
     closeSkillForm();
     await loadAll();
@@ -365,31 +390,62 @@ function renderAgents() {
   const el = document.getElementById('agents-list');
   if (!allAgents.length) { el.innerHTML = '<p class="empty">No agents yet</p>'; return; }
   el.innerHTML = allAgents.map(a => `
-    <div class="item" onclick="editAgent('${a.id}')">
-      <div class="name">${a.name}</div>
-      <div class="sub">${a.harness} · ${(a.skill_names||[]).length} skills</div>
+    <div class="item" data-name="${escHtml(a.name)}" data-version="${escHtml(a.version)}" onclick="editAgentEl(this)">
+      <div class="name">${escHtml(a.name)} <span style="color:#555;font-size:11px">${escHtml(a.version)}</span></div>
+      <div class="sub">${a.harness} · ${Object.keys(a.skill_refs||{}).length} skills</div>
     </div>`).join('');
 }
 
+function editSkillEl(el) { editSkill(el.dataset.name, el.dataset.version); }
+function editAgentEl(el) { editAgent(el.dataset.name, el.dataset.version); }
+
+const MODEL_OPTIONS = {
+  antigravity: [
+    { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash (default)' },
+    { value: 'gemini-2.5-pro',   label: 'Gemini 2.5 Pro' },
+  ],
+  claude: [
+    { value: 'claude-sonnet-4-6',         label: 'Claude Sonnet 4.6 (default)' },
+    { value: 'claude-opus-4-8',           label: 'Claude Opus 4.8' },
+    { value: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5' },
+  ],
+};
+
+function updateModelOptions(currentModel) {
+  const harness = document.getElementById('agent-harness').value;
+  const sel = document.getElementById('agent-model');
+  const opts = MODEL_OPTIONS[harness] || [];
+  sel.innerHTML = opts.map(o =>
+    `<option value="${o.value}"${o.value === currentModel ? ' selected' : ''}>${escHtml(o.label)}</option>`
+  ).join('');
+  if (currentModel && !opts.find(o => o.value === currentModel)) {
+    sel.innerHTML += `<option value="${escHtml(currentModel)}" selected>${escHtml(currentModel)}</option>`;
+  }
+}
+
 function newAgent() {
-  document.getElementById('agent-id').value = '';
   document.getElementById('agent-name').value = '';
+  document.getElementById('agent-version').value = '';
   document.getElementById('agent-harness').value = 'antigravity';
   document.getElementById('agent-system').value = '';
+  document.getElementById('agent-monty').checked = false;
+  updateModelOptions();
   document.getElementById('agent-delete-btn').style.display = 'none';
-  renderSkillCheckboxes([]);
+  renderSkillCheckboxes({});
   document.getElementById('agent-form').style.display = 'block';
 }
 
-function editAgent(id) {
-  const a = allAgents.find(x => x.id === id);
+function editAgent(name, version) {
+  const a = allAgents.find(x => x.name === name && x.version === version);
   if (!a) return;
-  document.getElementById('agent-id').value = a.id;
   document.getElementById('agent-name').value = a.name;
+  document.getElementById('agent-version').value = a.version;
   document.getElementById('agent-harness').value = a.harness;
+  updateModelOptions(a.model || '');
   document.getElementById('agent-system').value = a.system_prompt || '';
+  document.getElementById('agent-monty').checked = !!a.use_monty;
   document.getElementById('agent-delete-btn').style.display = 'inline-block';
-  renderSkillCheckboxes(a.skill_names || []);
+  renderSkillCheckboxes(a.skill_refs || {});
   document.getElementById('agent-form').style.display = 'block';
 }
 
@@ -397,23 +453,34 @@ function closeAgentForm() {
   document.getElementById('agent-form').style.display = 'none';
 }
 
-function renderSkillCheckboxes(selected) {
+function renderSkillCheckboxes(selectedRefs) {
+  // selectedRefs: {"skill_name": "version"}
   const el = document.getElementById('agent-skills-checkboxes');
   if (!allSkills.length) { el.innerHTML = '<span style="color:#555;font-size:12px">No skills yet</span>'; return; }
   el.innerHTML = allSkills.map(s => `
     <label>
-      <input type="checkbox" value="${s.name}" ${selected.includes(s.name) ? 'checked' : ''}>
-      ${s.name}
+      <input type="checkbox" data-skill-name="${escHtml(s.name)}" data-skill-version="${escHtml(s.version)}" ${selectedRefs[s.name] === s.version ? 'checked' : ''}>
+      ${escHtml(s.name)}<span style="color:#555;font-size:10px"> ${escHtml(s.version)}</span>
     </label>`).join('');
 }
 
+function getCheckedSkillRefs() {
+  const refs = {};
+  document.querySelectorAll('#agent-skills-checkboxes input[type=checkbox]:checked').forEach(el => {
+    refs[el.dataset.skillName] = el.dataset.skillVersion;
+  });
+  return refs;
+}
+
 async function saveAgent() {
-  const id = document.getElementById('agent-id').value;
   const body = {
     name: document.getElementById('agent-name').value.trim(),
+    version: document.getElementById('agent-version').value.trim() || 'v1',
     harness: document.getElementById('agent-harness').value,
+    model: document.getElementById('agent-model').value.trim(),
     system_prompt: document.getElementById('agent-system').value.trim(),
-    skill_names: getChecked('agent-skills-checkboxes'),
+    use_monty: document.getElementById('agent-monty').checked,
+    skill_refs: getCheckedSkillRefs(),
   };
   if (!body.name) { toast('Name required', false); return; }
   try {
@@ -425,10 +492,11 @@ async function saveAgent() {
 }
 
 async function deleteAgent() {
-  const id = document.getElementById('agent-id').value;
-  if (!id || !confirm('Delete this agent?')) return;
+  const name = document.getElementById('agent-name').value;
+  const version = document.getElementById('agent-version').value;
+  if (!name || !version || !confirm('Delete this agent version?')) return;
   try {
-    await api('DELETE', '/agents/' + id);
+    await api('DELETE', `/agents/${encodeURIComponent(name)}/${encodeURIComponent(version)}`);
     toast('Agent deleted');
     closeAgentForm();
     await loadAll();
@@ -447,7 +515,10 @@ function renderChatAgents() {
   const sel = document.getElementById('chat-agent-select');
   const cur = sel.value;
   sel.innerHTML = '<option value="">— select agent —</option>' +
-    allAgents.map(a => `<option value="${a.id}" ${a.id===cur?'selected':''}>${a.name} (${a.harness})</option>`).join('');
+    allAgents.map(a => {
+      const val = JSON.stringify({n: a.name, v: a.version});
+      return `<option value='${val}' ${val===cur?'selected':''}>${escHtml(a.name)} (${escHtml(a.version)}) · ${a.harness}</option>`;
+    }).join('');
   document.getElementById('chat-send').disabled = !chatSessionId || chatBusy;
 }
 
@@ -461,12 +532,13 @@ function chatAgentChanged() {
 }
 
 async function chatNewSession() {
-  const agentId = document.getElementById('chat-agent-select').value;
-  if (!agentId) { toast('Select an agent first', false); return; }
+  const raw = document.getElementById('chat-agent-select').value;
+  if (!raw) { toast('Select an agent first', false); return; }
+  const {n: agentName, v: agentVersion} = JSON.parse(raw);
   chatSSE && chatSSE.close();
   document.getElementById('chat-messages').innerHTML = '';
   try {
-    const s = await api('POST', '/sessions', { agent_id: agentId });
+    const s = await api('POST', '/sessions', { agent_name: agentName, agent_version: agentVersion });
     chatSessionId = s.id;
     document.getElementById('chat-session-label').textContent = 'session: ' + s.id;
     document.getElementById('chat-send').disabled = false;
@@ -513,7 +585,7 @@ function streamSession(sessionId) {
     const ev = JSON.parse(e.data);
 
     if (ev.type === 'tool_call') {
-      appendToolEvent(ev.tool, 'calling…', false);
+      appendToolEvent(ev.tool, 'calling…', false, ev.input);
     } else if (ev.type === 'tool_result') {
       appendToolEvent(ev.tool, ev.success ? 'done' : 'failed', !ev.success);
     } else if (ev.type === 'complete') {
@@ -540,6 +612,7 @@ function streamSession(sessionId) {
 
   chatSSE.onerror = () => {
     removeThinking();
+    appendMsg('assistant', '⚠ Connection lost. Session may still be running.');
     chatSSE.close();
     chatBusy = false;
     document.getElementById('chat-send').disabled = false;
@@ -570,24 +643,45 @@ function removeThinking() {
   if (thinkingEl) { thinkingEl.remove(); thinkingEl = null; }
 }
 
-function appendToolEvent(toolName, status, isErr) {
+function appendToolEvent(toolName, status, isErr, input) {
   const msgs = document.getElementById('chat-messages');
   if (status !== 'calling…') {
-    // For parallel calls to the same tool, resolve the first one still pending
-    const target = [...msgs.querySelectorAll(`.tool-event[data-tool="${CSS.escape(toolName)}"][data-run="${chatRunId}"]`)]
+    const target = [...msgs.querySelectorAll(`.tool-event[data-tool="${toolName}"][data-run="${chatRunId}"]`)]
       .find(el => el.querySelector('.tool-status').textContent === 'calling…');
     if (target) {
       target.className = 'tool-event ' + (isErr ? 'err' : 'ok');
-      target.querySelector('.tool-icon').textContent = isErr ? '✕' : '✓';
+      if (target.dataset.tool !== 'execute_python') {
+        target.querySelector('.tool-icon').textContent = isErr ? '✕' : '✓';
+      } else if (isErr) {
+        target.querySelector('.tool-icon').textContent = '✕';
+      }
       target.querySelector('.tool-status').textContent = status;
       return;
     }
   }
+  const isMonty = toolName === 'execute_python';
+  const isCalling = status === 'calling…';
+  const icon = isMonty ? '🐍' : (isCalling ? '⚙' : (isErr ? '✕' : '✓'));
   const div = document.createElement('div');
-  div.className = 'tool-event';
+  div.className = 'tool-event' + (!isCalling ? (' ' + (isErr ? 'err' : 'ok')) : '');
   div.dataset.tool = toolName;
   div.dataset.run = chatRunId;
-  div.innerHTML = `<div class="tool-icon">⚙</div><span class="tool-name">${escHtml(toolName)}</span><span class="tool-status" style="color:#555">${status}</span>`;
+  div.innerHTML = `<div class="tool-event-row"><div class="tool-icon">${icon}</div><span class="tool-name">${escHtml(toolName)}</span><span class="tool-status" style="color:#555">${status}</span></div>`;
+  if (isMonty && input && input.code) {
+    const toggle = document.createElement('button');
+    toggle.className = 'tool-code-toggle';
+    toggle.textContent = '▶ show code';
+    const pre = document.createElement('pre');
+    pre.className = 'tool-code';
+    pre.textContent = input.code;
+    toggle.onclick = () => {
+      const visible = pre.style.display === 'block';
+      pre.style.display = visible ? 'none' : 'block';
+      toggle.textContent = visible ? '▶ show code' : '▼ hide code';
+    };
+    div.appendChild(toggle);
+    div.appendChild(pre);
+  }
   msgs.appendChild(div);
   msgs.scrollTop = msgs.scrollHeight;
 }

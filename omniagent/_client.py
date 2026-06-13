@@ -84,6 +84,7 @@ def router():
         except KeyError as e:
             raise HTTPException(404, detail=str(e)) from e
         except Exception as e:
+            logger.exception("execute failed for tool=%s", body.tool)
             raise HTTPException(500, detail=str(e)) from e
 
     return r

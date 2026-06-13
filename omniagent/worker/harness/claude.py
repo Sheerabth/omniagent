@@ -11,7 +11,7 @@ from mcp.server import Server
 from mcp.types import TextContent
 from mcp.types import Tool as McpTool
 
-from omniagent.worker.harness.base import HarnessAdapter
+from omniagent.worker.harness.base import EXECUTE_PYTHON_DESCRIPTION, HarnessAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -29,11 +29,13 @@ class ClaudeAdapter(HarnessAdapter):
         emit_event: Callable[[dict], Awaitable[None]],
         use_monty: bool,
         tool_snapshot: dict[str, Any],
+        model: str = "",
     ) -> str:
         mcp_server = _build_mcp_server(tool_snapshot, tool_executor, emit_event, use_monty)
 
         options = ClaudeAgentOptions(
             tools=[],
+            model=model or None,
             system_prompt=system_prompt,
             mcp_servers={
                 "omniagent": McpSdkServerConfig(
@@ -72,20 +74,23 @@ def _build_mcp_server(
 ) -> Server:
     server = Server("omniagent-tools")
 
-    tools = [
-        McpTool(
-            name=name,
-            description=schema.get("description", ""),
-            inputSchema=schema.get("input_schema", {"type": "object", "properties": {}}),
-        )
-        for name, schema in tool_snapshot.items()
-    ]
+    if use_monty:
+        tools = []
+    else:
+        tools = [
+            McpTool(
+                name=name,
+                description=schema.get("description", ""),
+                inputSchema=schema.get("input_schema", {"type": "object", "properties": {}}),
+            )
+            for name, schema in tool_snapshot.items()
+        ]
 
     if use_monty:
         tools.append(
             McpTool(
                 name="execute_python",
-                description="Execute Python code in a pydantic-monty sandbox. Tools from the snapshot are available as functions.",
+                description=EXECUTE_PYTHON_DESCRIPTION,
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -106,14 +111,19 @@ def _build_mcp_server(
         if name == "execute_python" and use_monty:
             from omniagent.worker.monty import run_monty_code
 
+            await emit_event({"type": "tool_call", "tool": "execute_python", "input": arguments})
             try:
                 result = await run_monty_code(
                     code=arguments.get("code", ""),
                     tool_snapshot=tool_snapshot,
                     tool_executor=tool_executor,
                 )
+                await emit_event({"type": "tool_result", "tool": "execute_python", "success": True})
                 return [TextContent(type="text", text=json.dumps(result))]
             except Exception as exc:
+                await emit_event(
+                    {"type": "tool_result", "tool": "execute_python", "success": False}
+                )
                 return [TextContent(type="text", text=json.dumps({"error": str(exc)}))]
 
         await emit_event({"type": "tool_call", "tool": name, "input": arguments})

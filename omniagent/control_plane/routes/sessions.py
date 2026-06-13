@@ -15,56 +15,32 @@ router = APIRouter(prefix="/sessions", tags=["sessions"])
 MAX_HISTORY_TURNS = int(os.environ.get("MAX_HISTORY_TURNS", "50"))
 
 
-async def _build_tool_snapshot(conn, agent_row: dict) -> dict:
-    """Snapshot tool schemas for all skills attached to agent."""
-    snapshot: dict = {}
-    skill_names = agent_row.get("skill_names") or []
-    if not skill_names:
-        return snapshot
-
-    rows = await conn.execute(
-        "SELECT tool_names FROM skills WHERE name = ANY(%s)",
-        (skill_names,),
-    )
-    all_tool_names = []
-    for r in await rows.fetchall():
-        all_tool_names.extend(r["tool_names"])
-
-    if not all_tool_names:
-        return snapshot
-
-    rows = await conn.execute(
-        "SELECT name, description, input_schema, output_schema, execute_url FROM tools WHERE name = ANY(%s)",
-        (all_tool_names,),
-    )
-    for r in await rows.fetchall():
-        snapshot[r["name"]] = {
-            "name": r["name"],
-            "description": r["description"],
-            "input_schema": r["input_schema"],
-            "output_schema": r["output_schema"],
-            "execute_url": r["execute_url"] or "",
-        }
-    return snapshot
-
-
 @router.post("", response_model=SessionRecord, status_code=201)
 async def create_session(body: SessionCreate, _=Depends(require_any)):
     async with get_conn() as conn:
-        rows = await conn.execute("SELECT * FROM agents WHERE id = %s", (body.agent_id,))
+        if body.agent_version:
+            rows = await conn.execute(
+                "SELECT * FROM agents WHERE name = %s AND version = %s",
+                (body.agent_name, body.agent_version),
+            )
+        else:
+            rows = await conn.execute(
+                "SELECT * FROM agents WHERE name = %s ORDER BY created_at DESC LIMIT 1",
+                (body.agent_name,),
+            )
         agent = await rows.fetchone()
         if not agent:
             raise HTTPException(404, detail="Agent not found")
 
-        snapshot = await _build_tool_snapshot(conn, agent)
+        skill_versions = agent["skill_refs"] or {}
 
         rows = await conn.execute(
             """
-            INSERT INTO sessions (agent_id, tool_snapshot)
-            VALUES (%s, %s)
-            RETURNING id, agent_id, status, created_at
+            INSERT INTO sessions (agent_name, agent_version, skill_versions)
+            VALUES (%s, %s, %s)
+            RETURNING *
             """,
-            (body.agent_id, json.dumps(snapshot)),
+            (body.agent_name, agent["version"], json.dumps(skill_versions)),
         )
         return await rows.fetchone()
 
@@ -79,12 +55,6 @@ async def run_session(session_id: uuid.UUID, body: RunRequest, _=Depends(require
         if session["status"] == "running":
             raise HTTPException(409, detail="Session is already running")
 
-        rows = await conn.execute("SELECT * FROM agents WHERE id = %s", (session["agent_id"],))
-        agent = await rows.fetchone()
-        if not agent:
-            raise HTTPException(500, detail="Agent not found for session")
-
-        # Append user message and trim history
         messages = session["messages"] or []
         messages.append(
             {
@@ -96,40 +66,16 @@ async def run_session(session_id: uuid.UUID, body: RunRequest, _=Depends(require
         if len(messages) > MAX_HISTORY_TURNS * 2:
             messages = messages[-(MAX_HISTORY_TURNS * 2) :]
 
-        # Fetch skills
-        skill_names = agent["skill_names"] or []
-        skills = []
-        if skill_names:
-            rows = await conn.execute(
-                "SELECT * FROM skills WHERE name = ANY(%s)",
-                (skill_names,),
-            )
-            skills = await rows.fetchall()
-
-        # Update session: status=running, append message
         await conn.execute(
             "UPDATE sessions SET status='running', messages=%s, updated_at=NOW() WHERE id=%s",
             (json.dumps(messages), session_id),
         )
 
-        # Enqueue job
         from omniagent.worker.job import run_agent_job
-
-        job_payload = {
-            "session_id": str(session_id),
-            "agent_config": {
-                "harness": agent["harness"],
-                "system_prompt": agent["system_prompt"],
-                "skill_names": skill_names,
-                "skills": [dict(s) for s in skills],
-                "use_monty": agent["use_monty"],
-            },
-            "history": messages,
-        }
 
         await run_agent_job.configure(queue="default").defer_async(
             session_id=str(session_id),
-            payload=json.dumps(job_payload, default=str),
+            payload=json.dumps({"history": messages}, default=str),
         )
 
     return JSONResponse({"session_id": str(session_id)}, status_code=202)
@@ -153,4 +99,7 @@ async def get_session_status(session_id: uuid.UUID, _=Depends(require_any)):
         result=last_assistant,
         messages=messages,
         tool_calls=session["tool_calls"] or [],
+        agent_name=session["agent_name"],
+        agent_version=session["agent_version"],
+        skill_versions=session["skill_versions"] or {},
     )

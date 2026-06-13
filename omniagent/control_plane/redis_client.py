@@ -16,7 +16,9 @@ def get_redis() -> aioredis.Redis:
 async def init_redis() -> None:
     global _redis
     url = os.environ.get("REDIS_URL", "redis://localhost:6379")
-    _redis = aioredis.from_url(url, decode_responses=True)
+    _redis = aioredis.from_url(
+        url, decode_responses=True, socket_timeout=None, health_check_interval=10
+    )
 
 
 async def close_redis() -> None:

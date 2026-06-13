@@ -1,24 +1,24 @@
-import uuid
+import json
 
 from fastapi import APIRouter, Depends, HTTPException
 
 from omniagent.control_plane.auth import require_any
 from omniagent.control_plane.db import get_conn
-from omniagent.control_plane.models import AgentCreate, AgentPatch, AgentRecord
+from omniagent.control_plane.models import AgentCreate, AgentRecord
 
 router = APIRouter(prefix="/agents", tags=["agents"])
 
 VALID_HARNESSES = {"claude", "antigravity"}
 
 
-async def _validate_skill_names(conn, skill_names: list[str]) -> None:
-    if not skill_names:
-        return
-    rows = await conn.execute("SELECT name FROM skills WHERE name = ANY(%s)", (skill_names,))
-    found = {r["name"] for r in await rows.fetchall()}
-    missing = set(skill_names) - found
-    if missing:
-        raise HTTPException(400, detail=f"Unknown skills: {sorted(missing)}")
+async def _validate_skill_refs(conn, skill_refs: dict[str, str]) -> None:
+    for skill_name, skill_version in skill_refs.items():
+        rows = await conn.execute(
+            "SELECT id FROM skills WHERE name = %s AND version = %s",
+            (skill_name, skill_version),
+        )
+        if not await rows.fetchone():
+            raise HTTPException(400, detail=f"Skill not found: {skill_name}:{skill_version}")
 
 
 @router.post("", response_model=AgentRecord, status_code=201)
@@ -26,20 +26,29 @@ async def create_agent(body: AgentCreate, _=Depends(require_any)):
     if body.harness not in VALID_HARNESSES:
         raise HTTPException(400, detail=f"harness must be one of {VALID_HARNESSES}")
     async with get_conn() as conn:
-        await _validate_skill_names(conn, body.skill_names)
+        await _validate_skill_refs(conn, body.skill_refs)
         rows = await conn.execute(
             """
-            INSERT INTO agents (name, harness, skill_names, system_prompt, use_monty)
-            VALUES (%s, %s, %s, %s, %s)
-            ON CONFLICT (name) DO UPDATE
-              SET harness = EXCLUDED.harness,
-                  skill_names = EXCLUDED.skill_names,
+            INSERT INTO agents (name, version, harness, model, skill_refs, system_prompt, use_monty)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (name, version) DO UPDATE
+              SET harness       = EXCLUDED.harness,
+                  model         = EXCLUDED.model,
+                  skill_refs    = EXCLUDED.skill_refs,
                   system_prompt = EXCLUDED.system_prompt,
-                  use_monty = EXCLUDED.use_monty,
-                  updated_at = NOW()
+                  use_monty     = EXCLUDED.use_monty,
+                  updated_at    = NOW()
             RETURNING *
             """,
-            (body.name, body.harness, body.skill_names, body.system_prompt, body.use_monty),
+            (
+                body.name,
+                body.version,
+                body.harness,
+                body.model,
+                json.dumps(body.skill_refs),
+                body.system_prompt,
+                body.use_monty,
+            ),
         )
         return await rows.fetchone()
 
@@ -47,55 +56,35 @@ async def create_agent(body: AgentCreate, _=Depends(require_any)):
 @router.get("", response_model=list[AgentRecord])
 async def list_agents(_=Depends(require_any)):
     async with get_conn() as conn:
-        rows = await conn.execute("SELECT * FROM agents ORDER BY name")
+        rows = await conn.execute("SELECT * FROM agents ORDER BY name, created_at")
         return await rows.fetchall()
 
 
-@router.get("/{agent_id}", response_model=AgentRecord)
-async def get_agent(agent_id: uuid.UUID, _=Depends(require_any)):
+@router.get("/{name}", response_model=list[AgentRecord])
+async def list_agent_versions(name: str, _=Depends(require_any)):
     async with get_conn() as conn:
-        rows = await conn.execute("SELECT * FROM agents WHERE id = %s", (agent_id,))
+        rows = await conn.execute(
+            "SELECT * FROM agents WHERE name = %s ORDER BY created_at", (name,)
+        )
+        results = await rows.fetchall()
+    if not results:
+        raise HTTPException(404)
+    return results
+
+
+@router.get("/{name}/{version}", response_model=AgentRecord)
+async def get_agent(name: str, version: str, _=Depends(require_any)):
+    async with get_conn() as conn:
+        rows = await conn.execute(
+            "SELECT * FROM agents WHERE name = %s AND version = %s", (name, version)
+        )
         row = await rows.fetchone()
     if not row:
         raise HTTPException(404)
     return row
 
 
-@router.patch("/{agent_id}", response_model=AgentRecord)
-async def patch_agent(agent_id: uuid.UUID, body: AgentPatch, _=Depends(require_any)):
+@router.delete("/{name}/{version}", status_code=204)
+async def delete_agent(name: str, version: str, _=Depends(require_any)):
     async with get_conn() as conn:
-        rows = await conn.execute("SELECT * FROM agents WHERE id = %s", (agent_id,))
-        existing = await rows.fetchone()
-        if not existing:
-            raise HTTPException(404)
-
-        updates: dict = {}
-        if body.skill_names is not None:
-            await _validate_skill_names(conn, body.skill_names)
-            updates["skill_names"] = body.skill_names
-        if body.harness is not None:
-            if body.harness not in VALID_HARNESSES:
-                raise HTTPException(400, detail=f"harness must be one of {VALID_HARNESSES}")
-            updates["harness"] = body.harness
-        if body.system_prompt is not None:
-            updates["system_prompt"] = body.system_prompt
-        if body.use_monty is not None:
-            updates["use_monty"] = body.use_monty
-
-        if not updates:
-            return existing
-
-        set_clause = ", ".join(f"{k} = %s" for k in updates)
-        set_clause += ", updated_at = NOW()"
-        values = list(updates.values()) + [agent_id]
-        rows = await conn.execute(
-            f"UPDATE agents SET {set_clause} WHERE id = %s RETURNING *",
-            values,
-        )
-        return await rows.fetchone()
-
-
-@router.delete("/{agent_id}", status_code=204)
-async def delete_agent(agent_id: uuid.UUID, _=Depends(require_any)):
-    async with get_conn() as conn:
-        await conn.execute("DELETE FROM agents WHERE id = %s", (agent_id,))
+        await conn.execute("DELETE FROM agents WHERE name = %s AND version = %s", (name, version))

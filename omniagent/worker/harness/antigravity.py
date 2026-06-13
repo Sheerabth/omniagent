@@ -17,7 +17,7 @@ except ImportError as exc:
         "Verify LocalAgentConfig and policy import paths for the installed package version."
     ) from exc
 
-from omniagent.worker.harness.base import HarnessAdapter
+from omniagent.worker.harness.base import EXECUTE_PYTHON_DESCRIPTION, HarnessAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -37,11 +37,12 @@ class AntigravityAdapter(HarnessAdapter):
         emit_event: Callable[[dict], Awaitable[None]],
         use_monty: bool,
         tool_snapshot: dict[str, Any],
+        model: str = "",
     ) -> str:
-        tools = self._build_tool_callables(tool_snapshot, tool_executor, emit_event)
-
         if use_monty:
-            tools.append(self._build_monty_tool(tool_snapshot, tool_executor))
+            tools = [self._build_monty_tool(tool_snapshot, tool_executor, emit_event)]
+        else:
+            tools = self._build_tool_callables(tool_snapshot, tool_executor, emit_event)
 
         full_system = _build_system_with_history(system_prompt, history)
 
@@ -51,7 +52,7 @@ class AntigravityAdapter(HarnessAdapter):
             policies=[policy.allow_all()],
             api_key=self._api_key,
             workspaces=[],
-            model="gemini-2.5-flash",
+            model=model or "gemini-2.5-flash",
         )
 
         latest_user = next(
@@ -82,10 +83,33 @@ class AntigravityAdapter(HarnessAdapter):
         self,
         tool_snapshot: dict[str, Any],
         tool_executor: Callable[[str, dict], Awaitable[dict]],
+        emit_event: Callable[[dict], Awaitable[None]],
     ) -> Callable:
         from omniagent.worker.monty import make_monty_tool
 
-        return make_monty_tool(tool_snapshot, tool_executor)
+        inner = make_monty_tool(tool_snapshot, tool_executor)
+
+        async def execute_python(code: str, observation: str) -> str:
+            await emit_event(
+                {
+                    "type": "tool_call",
+                    "tool": "execute_python",
+                    "input": {"code": code, "observation": observation},
+                }
+            )
+            try:
+                result = await inner(code=code, observation=observation)
+                await emit_event({"type": "tool_result", "tool": "execute_python", "success": True})
+                return result
+            except Exception:
+                await emit_event(
+                    {"type": "tool_result", "tool": "execute_python", "success": False}
+                )
+                raise
+
+        execute_python.__name__ = "execute_python"
+        execute_python.__doc__ = EXECUTE_PYTHON_DESCRIPTION
+        return execute_python
 
 
 def _make_tool_fn(

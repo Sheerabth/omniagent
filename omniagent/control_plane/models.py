@@ -26,20 +26,16 @@ class ToolRecord(BaseModel):
 
 class SkillCreate(BaseModel):
     name: str
+    version: str
     tool_names: list[str]
     instructions: str = ""
     system_prompt: str = ""
 
 
-class SkillPatch(BaseModel):
-    tool_names: list[str] | None = None
-    instructions: str | None = None
-    system_prompt: str | None = None
-
-
 class SkillRecord(BaseModel):
     id: uuid.UUID
     name: str
+    version: str
     tool_names: list[str]
     instructions: str
     system_prompt: str
@@ -52,24 +48,21 @@ class SkillRecord(BaseModel):
 
 class AgentCreate(BaseModel):
     name: str
+    version: str
     harness: str
-    skill_names: list[str] = []
+    model: str = ""
+    skill_refs: dict[str, str] = {}  # {"skill_name": "skill_version"}
     system_prompt: str = ""
     use_monty: bool = False
-
-
-class AgentPatch(BaseModel):
-    skill_names: list[str] | None = None
-    harness: str | None = None
-    system_prompt: str | None = None
-    use_monty: bool | None = None
 
 
 class AgentRecord(BaseModel):
     id: uuid.UUID
     name: str
+    version: str
     harness: str
-    skill_names: list[str]
+    model: str
+    skill_refs: dict[str, str]
     system_prompt: str
     use_monty: bool
     created_at: datetime
@@ -80,12 +73,15 @@ class AgentRecord(BaseModel):
 
 
 class SessionCreate(BaseModel):
-    agent_id: uuid.UUID
+    agent_name: str
+    agent_version: str | None = None  # defaults to latest (most recently created)
 
 
 class SessionRecord(BaseModel):
     id: uuid.UUID
-    agent_id: uuid.UUID
+    agent_name: str
+    agent_version: str
+    skill_versions: dict[str, str]
     status: str
     created_at: datetime
 
@@ -109,6 +105,9 @@ class SessionStatus(BaseModel):
     result: str | None
     messages: list[dict[str, Any]]
     tool_calls: list[dict[str, Any]]
+    agent_name: str
+    agent_version: str
+    skill_versions: dict[str, str]
 
 
 # ── Settings ───────────────────────────────────────────────────────────────
@@ -145,17 +144,6 @@ class LlmKeyRecord(BaseModel):
 
 
 # ── Internal ───────────────────────────────────────────────────────────────
-
-
-class ToolExecuteRequest(BaseModel):
-    tool_name: str
-    input: dict[str, Any]
-    session_id: uuid.UUID
-    harness: str = "unknown"
-
-
-class ToolExecuteResponse(BaseModel):
-    output: dict[str, Any]
 
 
 class SessionResultRequest(BaseModel):
