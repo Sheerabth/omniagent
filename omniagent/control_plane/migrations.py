@@ -1,4 +1,5 @@
 """Auto-apply SQL migrations from migrations/ directory on startup."""
+
 import logging
 import os
 
@@ -11,12 +12,14 @@ MIGRATIONS_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "migrations
 
 async def run_migrations(dsn: str) -> None:
     async with await psycopg.AsyncConnection.connect(dsn, autocommit=True) as conn:
-        await conn.execute("""
+        await conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS schema_migrations (
                 filename TEXT PRIMARY KEY,
                 applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
-        """)
+        """
+        )
 
         rows = await conn.execute("SELECT filename FROM schema_migrations")
         applied = {r[0] for r in await rows.fetchall()}
@@ -26,10 +29,9 @@ async def run_migrations(dsn: str) -> None:
             if filename in applied:
                 continue
             path = os.path.join(MIGRATIONS_DIR, filename)
-            sql = open(path).read()
+            with open(path) as f:
+                sql = f.read()
             logger.info("Applying migration: %s", filename)
             await conn.execute(sql)
-            await conn.execute(
-                "INSERT INTO schema_migrations (filename) VALUES (%s)", (filename,)
-            )
+            await conn.execute("INSERT INTO schema_migrations (filename) VALUES (%s)", (filename,))
             logger.info("Applied: %s", filename)

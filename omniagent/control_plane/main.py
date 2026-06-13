@@ -1,6 +1,5 @@
 """FastAPI control plane."""
-import asyncio
-import json
+
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -8,8 +7,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
 
-from omniagent.control_plane import db, queue as q
-from omniagent.control_plane import redis_client
+from omniagent.control_plane import db, queue, redis_client
 from omniagent.control_plane.routes import agents, internal, sessions, settings, skills, sse, tools
 
 logger = logging.getLogger(__name__)
@@ -19,6 +17,7 @@ _UI_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "ui")
 
 async def _mark_session_failed(session_id: str) -> None:
     import uuid
+
     sid = uuid.UUID(session_id)
     async with db.get_conn() as conn:
         await conn.execute(
@@ -42,15 +41,15 @@ async def _reconcile_stuck_sessions() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    from omniagent.worker.job import app as proc_app
     from omniagent.control_plane.migrations import run_migrations
+    from omniagent.worker.job import app as proc_app
 
     dsn = os.environ.get("DATABASE_URL", "")
     await run_migrations(dsn)
     await db.init_pool()
     await redis_client.init_redis()
     await _reconcile_stuck_sessions()
-    q.set_session_fail_callback(_mark_session_failed)
+    queue.set_session_fail_callback(_mark_session_failed)
 
     async with proc_app.open_async():
         yield

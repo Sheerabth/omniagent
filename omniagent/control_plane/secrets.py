@@ -1,4 +1,5 @@
 """Secrets: AES-256-GCM for LLM API keys, argon2 for client/service keys."""
+
 import os
 import secrets as _secrets
 

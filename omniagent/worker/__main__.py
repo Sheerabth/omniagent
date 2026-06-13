@@ -1,4 +1,5 @@
 """Worker entry point: python -m omniagent.worker"""
+
 import asyncio
 import logging
 import os
@@ -14,6 +15,7 @@ async def main() -> None:
         sys.exit(1)
 
     from procrastinate.worker import Worker
+
     from omniagent.worker.job import app, run_agent_job  # noqa: F401 — registers task
 
     logger.info("Worker starting, polling queue 'default'")

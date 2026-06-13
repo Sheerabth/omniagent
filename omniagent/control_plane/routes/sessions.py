@@ -1,19 +1,14 @@
 import json
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 
 from omniagent.control_plane.auth import require_any
 from omniagent.control_plane.db import get_conn
-from omniagent.control_plane.models import (
-    RunRequest,
-    SessionCreate,
-    SessionRecord,
-    SessionStatus,
-)
+from omniagent.control_plane.models import RunRequest, SessionCreate, SessionRecord, SessionStatus
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 
@@ -91,13 +86,15 @@ async def run_session(session_id: uuid.UUID, body: RunRequest, _=Depends(require
 
         # Append user message and trim history
         messages = session["messages"] or []
-        messages.append({
-            "role": "user",
-            "content": body.prompt,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        })
+        messages.append(
+            {
+                "role": "user",
+                "content": body.prompt,
+                "timestamp": datetime.now(UTC).isoformat(),
+            }
+        )
         if len(messages) > MAX_HISTORY_TURNS * 2:
-            messages = messages[-(MAX_HISTORY_TURNS * 2):]
+            messages = messages[-(MAX_HISTORY_TURNS * 2) :]
 
         # Fetch skills
         skill_names = agent["skill_names"] or []

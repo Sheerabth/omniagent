@@ -1,4 +1,5 @@
 """SSE streaming via Redis pub/sub fan-out."""
+
 import asyncio
 import json
 import logging
@@ -25,16 +26,22 @@ async def stream_session(session_id: uuid.UUID, _=Depends(require_any)):
         raise HTTPException(404)
 
     if sess["status"] in ("complete", "failed"):
+
         async def immediate():
             async with get_conn() as conn:
-                rows = await conn.execute("SELECT messages FROM sessions WHERE id = %s", (session_id,))
+                rows = await conn.execute(
+                    "SELECT messages FROM sessions WHERE id = %s", (session_id,)
+                )
                 s = await rows.fetchone()
             messages = (s and s["messages"]) or []
-            last = next((m["content"] for m in reversed(messages) if m.get("role") == "assistant"), None)
+            last = next(
+                (m["content"] for m in reversed(messages) if m.get("role") == "assistant"), None
+            )
             if sess["status"] == "complete":
                 yield {"data": json.dumps({"type": "complete", "result": last})}
             else:
                 yield {"data": json.dumps({"type": "error", "reason": "session failed"})}
+
         return EventSourceResponse(immediate())
 
     async def event_generator():

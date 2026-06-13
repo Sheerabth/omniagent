@@ -37,7 +37,9 @@ async def get_weather(inp: WeatherInput) -> WeatherOutput:
     return WeatherOutput(temperature="22°C", condition="sunny")
 
 
-@tool(description="Get clothing recommendation given temperature and weather condition from get_weather.")
+@tool(
+    description="Get clothing recommendation given temperature and weather condition from get_weather."
+)
 async def get_clothing_recommendation(inp: ClothingInput) -> ClothingOutput:
     temp_val = int("".join(c for c in inp.temperature if c.isdigit() or c == "-") or "20")
     if temp_val < 10:

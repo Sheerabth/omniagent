@@ -1,4 +1,5 @@
 """Pydantic request/response models for the control plane API."""
+
 from __future__ import annotations
 
 import uuid
@@ -7,8 +8,8 @@ from typing import Any
 
 from pydantic import BaseModel
 
-
 # ── Tools ──────────────────────────────────────────────────────────────────
+
 
 class ToolRecord(BaseModel):
     name: str
@@ -22,6 +23,7 @@ class ToolRecord(BaseModel):
 
 
 # ── Skills ─────────────────────────────────────────────────────────────────
+
 
 class SkillCreate(BaseModel):
     name: str
@@ -47,6 +49,7 @@ class SkillRecord(BaseModel):
 
 
 # ── Agents ─────────────────────────────────────────────────────────────────
+
 
 class AgentCreate(BaseModel):
     name: str
@@ -75,6 +78,7 @@ class AgentRecord(BaseModel):
 
 
 # ── Sessions ───────────────────────────────────────────────────────────────
+
 
 class SessionCreate(BaseModel):
     agent_id: uuid.UUID
@@ -110,6 +114,7 @@ class SessionStatus(BaseModel):
 
 # ── Settings ───────────────────────────────────────────────────────────────
 
+
 class ClientKeyCreate(BaseModel):
     name: str
 
@@ -141,6 +146,7 @@ class LlmKeyRecord(BaseModel):
 
 
 # ── Internal ───────────────────────────────────────────────────────────────
+
 
 class ToolExecuteRequest(BaseModel):
     tool_name: str

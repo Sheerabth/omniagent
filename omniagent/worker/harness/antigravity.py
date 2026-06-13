@@ -1,5 +1,5 @@
 """Antigravity (Gemini) harness adapter."""
-import asyncio
+
 import inspect
 import json
 import logging
@@ -84,6 +84,7 @@ class AntigravityAdapter(HarnessAdapter):
         tool_executor: Callable[[str, dict], Awaitable[dict]],
     ) -> Callable:
         from omniagent.worker.monty import make_monty_tool
+
         return make_monty_tool(tool_snapshot, tool_executor)
 
 
@@ -105,7 +106,9 @@ def _make_tool_fn(
             return json.dumps(output)
         except Exception as exc:
             err = str(exc)
-            await emit_event({"type": "tool_result", "tool": tool_name, "success": False, "error": err})
+            await emit_event(
+                {"type": "tool_result", "tool": tool_name, "success": False, "error": err}
+            )
             return json.dumps({"error": err})
 
     params = [

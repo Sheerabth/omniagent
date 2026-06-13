@@ -1,7 +1,8 @@
 """Internal endpoints: worker only (worker key required)."""
+
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -25,11 +26,13 @@ async def post_session_result(
         if not sess:
             raise HTTPException(404)
         messages = sess["messages"] or []
-        messages.append({
-            "role": "assistant",
-            "content": body.result,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        })
+        messages.append(
+            {
+                "role": "assistant",
+                "content": body.result,
+                "timestamp": datetime.now(UTC).isoformat(),
+            }
+        )
         await conn.execute(
             "UPDATE sessions SET status='complete', messages=%s, updated_at=NOW() WHERE id=%s",
             (json.dumps(messages), session_id),
@@ -61,15 +64,17 @@ async def post_session_event(
                 sess = await rows.fetchone()
                 if sess:
                     tool_calls = sess["tool_calls"] or []
-                    tool_calls.append({
-                        "tool_name": event_data.get("tool"),
-                        "input": event_data.get("input"),
-                        "output": event_data.get("output"),
-                        "harness": event_data.get("harness"),
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                        "success": event_data.get("success", True),
-                        "error": event_data.get("error"),
-                    })
+                    tool_calls.append(
+                        {
+                            "tool_name": event_data.get("tool"),
+                            "input": event_data.get("input"),
+                            "output": event_data.get("output"),
+                            "harness": event_data.get("harness"),
+                            "timestamp": datetime.now(UTC).isoformat(),
+                            "success": event_data.get("success", True),
+                            "error": event_data.get("error"),
+                        }
+                    )
                     await conn.execute(
                         "UPDATE sessions SET tool_calls = %s WHERE id = %s",
                         (json.dumps(tool_calls), session_id),

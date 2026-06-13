@@ -1,4 +1,5 @@
 """Procrastinate worker task: run_agent_job."""
+
 import json
 import logging
 import os
@@ -124,14 +125,17 @@ async def run_agent_job(session_id: str, payload: str) -> None:
 
     async def tool_exec(tool_name: str, input_data: dict) -> dict:
         output = await _tool_executor(session_id, tool_name, input_data, tool_snapshot, harness)
-        await _emit_event(session_id, {
-            "type": "tool_result",
-            "tool": tool_name,
-            "success": True,
-            "input": input_data,
-            "output": output,
-            "harness": harness,
-        })
+        await _emit_event(
+            session_id,
+            {
+                "type": "tool_result",
+                "tool": tool_name,
+                "success": True,
+                "input": input_data,
+                "output": output,
+                "harness": harness,
+            },
+        )
         return output
 
     async def emit(event: dict) -> None:
@@ -140,9 +144,11 @@ async def run_agent_job(session_id: str, payload: str) -> None:
     try:
         if harness == "antigravity":
             from omniagent.worker.harness.antigravity import AntigravityAdapter
+
             adapter = AntigravityAdapter(api_key=llm_api_key)
         elif harness == "claude":
             from omniagent.worker.harness.claude import ClaudeAdapter
+
             adapter = ClaudeAdapter(api_key=llm_api_key)
         else:
             raise ValueError(f"Unknown harness: {harness!r}")

@@ -62,4 +62,24 @@ packages = ["omniagent"]
 dev = [
     "pytest",
     "pytest-asyncio",
+    "black",
+    "isort",
+    "ruff",
+    "pre-commit",
 ]
+
+[tool.black]
+line-length = 100
+target-version = ["py313"]
+
+[tool.isort]
+profile = "black"
+line_length = 100
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501", "B008"]

@@ -36,7 +36,7 @@ async def create_skill(body: SkillCreate, _=Depends(require_any)):
             """,
             (body.name, body.tool_names, body.instructions, body.system_prompt),
         )
-        return (await rows.fetchone())
+        return await rows.fetchone()
 
 
 @router.get("", response_model=list[SkillRecord])

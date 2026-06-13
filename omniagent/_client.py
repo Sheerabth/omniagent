@@ -1,4 +1,5 @@
 """omniagent SDK — library-style, framework-agnostic."""
+
 import logging
 from typing import Any
 
@@ -28,7 +29,12 @@ def init(
     global _config
 
     ns = namespace or service
-    _config = {"service": service, "namespace": ns, "control_plane": control_plane, "api_key": api_key}
+    _config = {
+        "service": service,
+        "namespace": ns,
+        "control_plane": control_plane,
+        "api_key": api_key,
+    }
 
     tools = [
         {
@@ -76,8 +82,8 @@ def router():
             output = await handle_execute(body.tool, body.input)
             return {"output": output}
         except KeyError as e:
-            raise HTTPException(404, detail=str(e))
+            raise HTTPException(404, detail=str(e)) from e
         except Exception as e:
-            raise HTTPException(500, detail=str(e))
+            raise HTTPException(500, detail=str(e)) from e
 
     return r

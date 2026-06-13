@@ -1,7 +1,8 @@
 """Postgres connection pool (psycopg async)."""
+
 import os
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
 
 import psycopg
 from psycopg.rows import dict_row

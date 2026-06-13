@@ -1,4 +1,5 @@
 """Claude Code harness adapter (via claude-agent-sdk + in-process MCP server)."""
+
 import json
 import logging
 from collections.abc import Awaitable, Callable
@@ -34,11 +35,13 @@ class ClaudeAdapter(HarnessAdapter):
         options = ClaudeAgentOptions(
             tools=[],
             system_prompt=system_prompt,
-            mcp_servers={"omniagent": McpSdkServerConfig(
-                type="sdk",
-                name="omniagent",
-                instance=mcp_server,
-            )},
+            mcp_servers={
+                "omniagent": McpSdkServerConfig(
+                    type="sdk",
+                    name="omniagent",
+                    instance=mcp_server,
+                )
+            },
             permission_mode="bypassPermissions",
         )
 
@@ -79,18 +82,20 @@ def _build_mcp_server(
     ]
 
     if use_monty:
-        tools.append(McpTool(
-            name="execute_python",
-            description="Execute Python code in a pydantic-monty sandbox. Tools from the snapshot are available as functions.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "code": {"type": "string", "description": "Python code to execute"},
-                    "observation": {"type": "string", "description": "Why executing this code"},
+        tools.append(
+            McpTool(
+                name="execute_python",
+                description="Execute Python code in a pydantic-monty sandbox. Tools from the snapshot are available as functions.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "code": {"type": "string", "description": "Python code to execute"},
+                        "observation": {"type": "string", "description": "Why executing this code"},
+                    },
+                    "required": ["code", "observation"],
                 },
-                "required": ["code", "observation"],
-            },
-        ))
+            )
+        )
 
     @server.list_tools()
     async def list_tools() -> list[McpTool]:
@@ -100,6 +105,7 @@ def _build_mcp_server(
     async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         if name == "execute_python" and use_monty:
             from omniagent.worker.monty import run_monty_code
+
             try:
                 result = await run_monty_code(
                     code=arguments.get("code", ""),

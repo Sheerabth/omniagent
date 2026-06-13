@@ -7,6 +7,7 @@ Key types:
 
 Key prefix (first 8 chars) is stored alongside hash to avoid O(n) argon2 scan.
 """
+
 import os
 from typing import Literal
 

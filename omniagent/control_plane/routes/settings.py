@@ -1,6 +1,6 @@
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 
 from omniagent.control_plane.auth import require_any
 from omniagent.control_plane.db import get_conn
@@ -12,17 +12,13 @@ from omniagent.control_plane.models import (
     ServiceKeyCreate,
     ServiceKeyRecord,
 )
-from omniagent.control_plane.secrets import (
-    decrypt_llm_key,
-    encrypt_llm_key,
-    generate_key,
-    hash_key,
-)
+from omniagent.control_plane.secrets import encrypt_llm_key, generate_key, hash_key
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 
 
 # ── Client keys ────────────────────────────────────────────────────────────
+
 
 @router.post("/client-keys", status_code=201)
 async def create_client_key(body: ClientKeyCreate, _=Depends(require_any)):
@@ -41,7 +37,9 @@ async def create_client_key(body: ClientKeyCreate, _=Depends(require_any)):
 @router.get("/client-keys", response_model=list[ClientKeyRecord])
 async def list_client_keys(_=Depends(require_any)):
     async with get_conn() as conn:
-        rows = await conn.execute("SELECT id, name, created_at FROM client_keys ORDER BY created_at")
+        rows = await conn.execute(
+            "SELECT id, name, created_at FROM client_keys ORDER BY created_at"
+        )
         return await rows.fetchall()
 
 
@@ -52,6 +50,7 @@ async def delete_client_key(key_id: uuid.UUID, _=Depends(require_any)):
 
 
 # ── Service keys ───────────────────────────────────────────────────────────
+
 
 @router.post("/service-keys", status_code=201)
 async def create_service_key(body: ServiceKeyCreate, _=Depends(require_any)):
@@ -70,7 +69,9 @@ async def create_service_key(body: ServiceKeyCreate, _=Depends(require_any)):
 @router.get("/service-keys", response_model=list[ServiceKeyRecord])
 async def list_service_keys(_=Depends(require_any)):
     async with get_conn() as conn:
-        rows = await conn.execute("SELECT id, name, created_at FROM service_keys ORDER BY created_at")
+        rows = await conn.execute(
+            "SELECT id, name, created_at FROM service_keys ORDER BY created_at"
+        )
         return await rows.fetchall()
 
 
@@ -81,6 +82,7 @@ async def delete_service_key(key_id: uuid.UUID, _=Depends(require_any)):
 
 
 # ── LLM API keys ───────────────────────────────────────────────────────────
+
 
 @router.post("/keys", status_code=201)
 async def create_llm_key(body: LlmKeyCreate, _=Depends(require_any)):

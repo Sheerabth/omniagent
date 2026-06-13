@@ -1,4 +1,5 @@
 """Procrastinate setup for control plane (monitor-only — no job execution)."""
+
 import logging
 
 logger = logging.getLogger(__name__)

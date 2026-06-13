@@ -1,5 +1,3 @@
-import uuid
-
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
@@ -27,6 +25,7 @@ class ToolRegisterRequest(BaseModel):
 @router.post("/register", status_code=204)
 async def register_tools(body: ToolRegisterRequest, _=Depends(require_any)):
     import json
+
     async with get_conn() as conn:
         # Check namespace collision: another service owns this namespace
         rows = await conn.execute(
@@ -54,7 +53,9 @@ async def register_tools(body: ToolRegisterRequest, _=Depends(require_any)):
                       updated_at = NOW()
                 """,
                 (
-                    t.name, body.namespace, body.service,
+                    t.name,
+                    body.namespace,
+                    body.service,
                     t.description,
                     json.dumps(t.input_schema),
                     json.dumps(t.output_schema),

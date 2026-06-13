@@ -1,4 +1,5 @@
 """Monty sandboxed code execution for workers."""
+
 import asyncio
 import json
 from collections.abc import Awaitable, Callable

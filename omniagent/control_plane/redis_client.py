@@ -1,4 +1,5 @@
 """Redis connection for pub/sub fan-out."""
+
 import os
 
 import redis.asyncio as aioredis

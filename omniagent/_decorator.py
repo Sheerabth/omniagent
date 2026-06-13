@@ -15,9 +15,7 @@ def tool(description: str | None = None) -> Callable[[F], F]:
         hints = typing.get_type_hints(fn)
         params = list(hints.items())
 
-        input_type = next(
-            (t for k, t in params if k != "return"), None
-        )
+        input_type = next((t for k, t in params if k != "return"), None)
         output_type = hints.get("return")
 
         if input_type is None or not issubclass(input_type, ToolInput):
@@ -25,9 +23,7 @@ def tool(description: str | None = None) -> Callable[[F], F]:
                 f"@tool function '{fn.__name__}': first parameter must subclass ToolInput"
             )
         if output_type is None or not issubclass(output_type, ToolOutput):
-            raise TypeError(
-                f"@tool function '{fn.__name__}': return type must subclass ToolOutput"
-            )
+            raise TypeError(f"@tool function '{fn.__name__}': return type must subclass ToolOutput")
 
         desc = description or (fn.__doc__ or "").strip()
         if not desc:
@@ -38,6 +34,7 @@ def tool(description: str | None = None) -> Callable[[F], F]:
         if asyncio.iscoroutinefunction(fn):
             wrapped = fn
         else:
+
             @functools.wraps(fn)
             async def wrapped(*args: Any, **kwargs: Any) -> Any:
                 return await asyncio.get_event_loop().run_in_executor(
