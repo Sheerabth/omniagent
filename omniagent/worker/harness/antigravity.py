@@ -1,0 +1,156 @@
+"""Antigravity (Gemini) harness adapter."""
+import asyncio
+import json
+import logging
+from collections.abc import Awaitable, Callable
+from typing import Any
+
+from google.antigravity import Agent
+from google.antigravity.connections.local.local_connection_config import LocalAgentConfig
+from google.antigravity.hooks import policy
+from google.antigravity.types import HookResult, ToolCall
+
+from omniagent.worker.harness.base import HarnessAdapter
+
+logger = logging.getLogger(__name__)
+
+
+class AntigravityAdapter(HarnessAdapter):
+
+    def __init__(self, api_key: str | None = None):
+        self._api_key = api_key
+
+    async def run(
+        self,
+        system_prompt: str,
+        history: list[dict],
+        tool_executor: Callable[[str, dict], Awaitable[dict]],
+        emit_event: Callable[[dict], Awaitable[None]],
+        use_monty: bool,
+        tool_snapshot: dict[str, Any],
+    ) -> str:
+        # Build Python callables for each tool in snapshot
+        tools = self._build_tool_callables(tool_snapshot, tool_executor, emit_event)
+
+        if use_monty:
+            tools.append(self._build_monty_tool(tool_snapshot, tool_executor))
+
+        # Build history preamble — Antigravity has no native history replay
+        # so inject it into the system instructions
+        full_system = _build_system_with_history(system_prompt, history)
+
+        config = LocalAgentConfig(
+            system_instructions=full_system,
+            tools=tools,
+            policies=[policy.allow_all()],
+            api_key=self._api_key,
+            workspaces=[],
+        )
+
+        # The latest user message is the actual prompt
+        latest_user = next(
+            (m["content"] for m in reversed(history) if m.get("role") == "user"),
+            "",
+        )
+
+        await emit_event({"type": "thinking", "content": "Starting Antigravity agent"})
+
+        async with Agent(config) as agent:
+            response = await agent.chat(latest_user)
+
+        result = _extract_text(response)
+        await emit_event({"type": "complete", "result": result})
+        return result
+
+    def _build_tool_callables(
+        self,
+        tool_snapshot: dict[str, Any],
+        tool_executor: Callable[[str, dict], Awaitable[dict]],
+        emit_event: Callable[[dict], Awaitable[None]],
+    ) -> list[Callable]:
+        callables = []
+        for tool_name, schema in tool_snapshot.items():
+            fn = _make_tool_fn(tool_name, schema, tool_executor, emit_event)
+            callables.append(fn)
+        return callables
+
+    def _build_monty_tool(
+        self,
+        tool_snapshot: dict[str, Any],
+        tool_executor: Callable[[str, dict], Awaitable[dict]],
+    ) -> Callable:
+        from omniagent.worker.monty import make_monty_tool
+        return make_monty_tool(tool_snapshot, tool_executor)
+
+
+def _make_tool_fn(
+    tool_name: str,
+    schema: dict[str, Any],
+    tool_executor: Callable[[str, dict], Awaitable[dict]],
+    emit_event: Callable[[dict], Awaitable[None]],
+) -> Callable:
+    """Create an async Python callable that routes through tool_executor."""
+    input_schema = schema.get("input_schema", {})
+    props = input_schema.get("properties", {})
+    param_names = [k for k in props if k != "observation"]
+
+    # Build a dynamic signature so Antigravity generates the right schema
+    param_str = ", ".join(["observation: str"] + [f"{p}: object" for p in param_names])
+    fn_src = f"async def {_safe_name(tool_name)}({param_str}): pass"
+
+    ns: dict[str, Any] = {}
+    exec(fn_src, ns)  # noqa: S102
+    stub = ns[_safe_name(tool_name)]
+
+    async def _impl(**kwargs: Any) -> str:
+        input_data = dict(kwargs)
+        await emit_event({"type": "tool_call", "tool": tool_name, "input": input_data})
+        try:
+            output = await tool_executor(tool_name, input_data)
+            await emit_event({"type": "tool_result", "tool": tool_name, "success": True})
+            return json.dumps(output)
+        except Exception as exc:
+            err = str(exc)
+            if "policy_blocked" in err:
+                await emit_event({"type": "error", "reason": f"policy_blocked: {err}"})
+                return json.dumps({"error": "policy_blocked", "reason": err})
+            await emit_event({"type": "tool_result", "tool": tool_name, "success": False})
+            return json.dumps({"error": err})
+
+    import functools
+    import inspect
+
+    # Copy signature from stub so Antigravity sees the right params
+    @functools.wraps(stub)
+    async def tool_fn(**kwargs: Any) -> str:
+        return await _impl(**kwargs)
+
+    tool_fn.__name__ = _safe_name(tool_name)
+    tool_fn.__doc__ = schema.get("description", "")
+    return tool_fn
+
+
+def _safe_name(tool_name: str) -> str:
+    return tool_name.replace(".", "__").replace("-", "_")
+
+
+def _build_system_with_history(system_prompt: str, history: list[dict]) -> str:
+    prior = [m for m in history[:-1] if m.get("role") in ("user", "assistant")]
+    if not prior:
+        return system_prompt
+    transcript = "\n".join(
+        f"{m['role'].upper()}: {m['content']}" for m in prior
+    )
+    return f"{system_prompt}\n\n--- Prior conversation ---\n{transcript}\n--- End prior conversation ---"
+
+
+def _extract_text(response: Any) -> str:
+    if hasattr(response, "text"):
+        return response.text
+    if hasattr(response, "content"):
+        c = response.content
+        if isinstance(c, str):
+            return c
+        if isinstance(c, list):
+            return " ".join(getattr(part, "text", str(part)) for part in c)
+    return str(response)
