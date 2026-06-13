@@ -10,6 +10,7 @@ from fastapi.responses import FileResponse
 from omniagent.control_plane import db, queue, redis_client
 from omniagent.control_plane.routes import agents, internal, sessions, settings, skills, sse, tools
 
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 _UI_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "ui")

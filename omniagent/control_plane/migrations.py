@@ -25,9 +25,9 @@ async def run_migrations(dsn: str) -> None:
         applied = {r[0] for r in await rows.fetchall()}
 
         files = sorted(f for f in os.listdir(MIGRATIONS_DIR) if f.endswith(".sql"))
-        for filename in files:
-            if filename in applied:
-                continue
+        pending = [f for f in files if f not in applied]
+        logger.info("Migrations: %d applied, %d pending", len(applied), len(pending))
+        for filename in pending:
             path = os.path.join(MIGRATIONS_DIR, filename)
             with open(path) as f:
                 sql = f.read()
@@ -35,3 +35,5 @@ async def run_migrations(dsn: str) -> None:
             await conn.execute(sql)
             await conn.execute("INSERT INTO schema_migrations (filename) VALUES (%s)", (filename,))
             logger.info("Applied: %s", filename)
+        if not pending:
+            logger.info("All migrations up to date")

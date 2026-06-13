@@ -42,14 +42,13 @@ async def register_tools(body: ToolRegisterRequest, _=Depends(require_any)):
         for t in body.tools:
             await conn.execute(
                 """
-                INSERT INTO tools (name, namespace, service, description, input_schema, output_schema, execute_url, available)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, TRUE)
+                INSERT INTO tools (name, namespace, service, description, input_schema, output_schema, execute_url)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (name) DO UPDATE
                   SET description = EXCLUDED.description,
                       input_schema = EXCLUDED.input_schema,
                       output_schema = EXCLUDED.output_schema,
                       execute_url = EXCLUDED.execute_url,
-                      available = TRUE,
                       updated_at = NOW()
                 """,
                 (

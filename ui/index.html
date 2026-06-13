@@ -118,8 +118,6 @@
       <p id="td-desc" style="font-size:13px;color:#ccc;margin-top:4px"></p>
       <label>Input Schema</label>
       <pre id="td-in" style="background:#111;padding:10px;border-radius:6px;font-size:11px;overflow:auto;margin-top:4px;color:#aaa;white-space:pre-wrap"></pre>
-      <label>Status</label>
-      <p id="td-status" style="font-size:13px;margin-top:4px"></p>
     </div>
   </div>
 </div>
@@ -268,7 +266,7 @@ function renderTools() {
   el.innerHTML = allTools.map(t => `
     <div class="item" onclick="showTool('${t.name}')">
       <div class="name">${t.name}</div>
-      <div class="sub">${t.available ? '● online' : '○ offline'} · ${t.service}</div>
+      <div class="sub">${t.service}</div>
     </div>`).join('');
 }
 
@@ -279,9 +277,6 @@ function showTool(name) {
   document.getElementById('td-name').textContent = t.name;
   document.getElementById('td-desc').textContent = t.description || '—';
   document.getElementById('td-in').textContent = JSON.stringify(t.input_schema, null, 2);
-  const s = document.getElementById('td-status');
-  s.textContent = t.available ? 'Online' : 'Offline';
-  s.style.color = t.available ? '#6fcf6f' : '#f87171';
 }
 
 // ── Skills ─────────────────────────────────────────────────────────────────
@@ -577,12 +572,16 @@ function removeThinking() {
 
 function appendToolEvent(toolName, status, isErr) {
   const msgs = document.getElementById('chat-messages');
-  const existing = msgs.querySelector(`.tool-event[data-tool="${CSS.escape(toolName)}"][data-run="${chatRunId}"]`);
-  if (existing && status !== 'calling…') {
-    existing.className = 'tool-event ' + (isErr ? 'err' : 'ok');
-    existing.querySelector('.tool-icon').textContent = isErr ? '✕' : '✓';
-    existing.querySelector('.tool-status').textContent = status;
-    return;
+  if (status !== 'calling…') {
+    // For parallel calls to the same tool, resolve the first one still pending
+    const target = [...msgs.querySelectorAll(`.tool-event[data-tool="${CSS.escape(toolName)}"][data-run="${chatRunId}"]`)]
+      .find(el => el.querySelector('.tool-status').textContent === 'calling…');
+    if (target) {
+      target.className = 'tool-event ' + (isErr ? 'err' : 'ok');
+      target.querySelector('.tool-icon').textContent = isErr ? '✕' : '✓';
+      target.querySelector('.tool-status').textContent = status;
+      return;
+    }
   }
   const div = document.createElement('div');
   div.className = 'tool-event';

@@ -19,7 +19,6 @@ class ToolRecord(BaseModel):
     input_schema: dict[str, Any]
     output_schema: dict[str, Any]
     execute_url: str = ""
-    available: bool
 
 
 # ── Skills ─────────────────────────────────────────────────────────────────
