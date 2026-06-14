@@ -88,6 +88,7 @@ class SessionRecord(BaseModel):
 
 class RunRequest(BaseModel):
     prompt: str
+    context: Any = None
 
 
 class ToolCallEntry(BaseModel):

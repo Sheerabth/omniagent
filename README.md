@@ -4,49 +4,40 @@
 
 Self-hosted platform for running AI agents across multiple LLM providers. Define tools once in Pydantic — they work with any supported agent harness (Claude, Gemini/Antigravity).
 
-Your microservices annotate functions with `@tool`. OmniAgent discovers them, routes calls, and manages agent sessions. Use the built-in UI or hit the REST API.
+Your microservices annotate functions with `@tool`. OmniAgent discovers them, routes calls, passes user context, and manages agent sessions. Use the built-in UI or hit the REST API.
 
 ---
 
 ## Architecture
 
-### E2E Flow
+### Identity & auth layers
 
-**Setup: services and UI configure the platform**
+OmniAgent authenticates at every hop — zero-trust even on internal networks.
 
 ```mermaid
 flowchart LR
-    subgraph Service["Service"]
-        T["@tool() fns<br/>omniagent.init()<br/>omniagent.router()"]
-    end
-    subgraph UI["UI"]
-        S["Skills tab<br/>Agents tab"]
-    end
-    subgraph CP["Control Plane"]
-        R["/tools/register<br/>/skills<br/>/agents"]
-    end
-    subgraph DB["Postgres"]
-        D["tools<br/>skills<br/>agents<br/>sessions<br/>keys"]
+    subgraph Auth["Auth layers"]
+        A1["API Key<br/>X-OmniAgent-Key<br/>(argon2, revocable)"]
+        A2["Internal Key<br/>X-OmniAgent-Key<br/>(plain match, env)"]
+        A3["Worker Assertion<br/>X-OmniAgent-Assertion<br/>(HS256 JWT, 60s TTL)"]
+        A4["Context Blob<br/>opaque Any<br/>(consumer-owned auth)"]
     end
 
-    T -- "POST /tools/register" --> R
-    S -- "POST /skills" --> R
-    S -- "POST /agents" --> R
-    R -- "INSERT" --> D
+    Client["Client UI"] -->|"API Key"| CP["Control Plane"]
+    CP -->|"Internal Key"| Worker["Worker"]
+    Worker -->|"JWT Assertion"| Service["Service"]
+    Client -->|"context via CP→Worker→Service"| Service
 ```
 
-**Execution: chat session run**
+### Execution flow
 
 ```mermaid
 flowchart TD
-    UI["UI"] -->|"1. POST /sessions"| CP["Control Plane"]
-    CP -->|"INSERT session (status=active)"| DB["Postgres"]
-    CP -->|"session_id"| UI
-    UI -->|"2. POST /sessions/X/run"| CP
-    CP -->|"UPDATE status=running"| DB
-    CP -->|"DEFER job (Procrastinate)"| Q["Job Queue"]
+    UI["Client UI"] -->|"1. POST /sessions/X/run<br/>{prompt, context}"| CP["Control Plane"]
+    CP -->|"UPDATE sessions<br/>(messages + context)"| DB["Postgres"]
+    CP -->|"DEFER job (Procrastinate)<br/>{history, context}"| Q["Job Queue"]
     CP -->|"202 accepted"| UI
-    UI -->|"3. GET /sessions/X/stream"| CP
+    UI -->|"2. GET /sessions/X/stream"| CP
     CP <-->|"pub/sub"| Redis["Redis<br/>channel: session_X"]
     Redis <-->|"SSE"| UI
 
@@ -56,7 +47,7 @@ flowchart TD
     Worker -->|"2. build system prompt"| Worker
     Worker -->|"3. adapter.run()"| Harness["Claude SDK<br/>or Antigravity"]
     Harness -->|"LLM decides<br/>to call tool"| Tool["tool_executor()"]
-    Tool -->|"POST /execute"| Service["Service"]
+    Tool -->|"POST /execute<br/>X-OmniAgent-Assertion: JWT<br/>{tool, input, context, session_id}"| Service["Service"]
     Service -->|"output dict"| Tool
     Tool -->|"_emit_event()"| Event["/internal/sessions/X/event"]
     Event -->|"UPDATE tool_calls"| DB
@@ -68,7 +59,37 @@ flowchart TD
     Redis -->|"SSE: complete"| UI
 ```
 
-**Internal events**
+### Context forwarding (identity propagation)
+
+Consumer-defined opaque blob forwarded blindly through every hop. OmniAgent never reads it.
+
+```mermaid
+flowchart LR
+    Client["Client UI"] -->|"POST /sessions/X/run<br/>context: {access_token, user_id, tenant}"| CP["Control Plane"]
+    CP -->|"defer_async<br/>payload.context"| Worker["Worker"]
+    Worker -->|"POST /execute<br/>body.context"| Service["Service"]
+    Service -->|"ToolInput.context<br/>available in tool fn"| Tool["Tool Function"]
+    Tool -->|"validate token<br/>call downstream APIs"| Downstream["Consumer's Services"]
+```
+
+### Auth verification
+
+```mermaid
+flowchart TD
+    subgraph "Client → CP"
+        Req1["X-OmniAgent-Key"] --> Resolve["_resolve_key(key)"]
+        Resolve -->|"env match"| Internal["internal ✓"]
+        Resolve -->|"argon2 match"| Api["api ✓"]
+        Resolve -->|"no match"| Deny1["401"]
+    end
+    subgraph "Worker → Service"
+        Req2["X-OmniAgent-Assertion"] --> JWT["jwt.decode(HS256)"]
+        JWT -->|"valid + not expired"| Allow["200 ✓"]
+        JWT -->|"invalid / expired"| Deny2["401"]
+    end
+```
+
+### Internal events
 
 ```mermaid
 flowchart LR
@@ -86,17 +107,7 @@ flowchart LR
     end
 ```
 
-**Auth**
-
-```mermaid
-flowchart TD
-    Req["Request + X-OmniAgent-Key"] --> Resolve["_resolve_key(key)"]
-    Resolve -->|"key == OMNIAGENT_INTERNAL_KEY"| Internal["internal ✓"]
-    Resolve -->|"argon2 match<br/>api_keys table"| Api["api ✓"]
-    Resolve -->|"no match"| Deny["401"]
-```
-
-**Monty (use_monty=true)**
+### Monty (use_monty=true)
 
 ```mermaid
 flowchart TD
@@ -158,7 +169,7 @@ cp .env.example .env
 | Variable | Required | Description |
 |---|---|---|
 | `DATABASE_URL` | ✅ | `postgresql://omniagent:omniagent@localhost:5432/omniagent` |
-| `OMNIAGENT_INTERNAL_KEY` | ✅ | Shared secret for CP ↔ Worker communication |
+| `OMNIAGENT_INTERNAL_KEY` | ✅ | Shared secret for CP ↔ Worker + Worker → Service JWT assertion |
 | `OMNIAGENT_API_KEY` | — | API key for services and external UIs (generate via `/settings/api-keys`) |
 | `OMNIAGENT_{HARNESS}_API_KEY` | — | LLM API key per harness, e.g. `OMNIAGENT_CLAUDE_API_KEY` |
 | `MAX_HISTORY_TURNS` | — | Conversation history limit (default: `50`) |
@@ -220,8 +231,8 @@ Register at startup and mount the execute route:
 
 ```python
 import omniagent
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+import os
+from fastapi import FastAPI, HTTPException, Request
 
 omniagent.init(
     service="payments",
@@ -233,18 +244,22 @@ omniagent.init(
 
 app = FastAPI()
 
-class ExecuteRequest(BaseModel):
-    tool: str
-    input: dict
-
 @app.post("/execute")
-async def execute(body: ExecuteRequest):
+async def execute(request: Request):
     try:
-        output = await omniagent.handle_execute(body.tool, body.input)
+        output = await omniagent.handle_execute_from_request(
+            await request.json(), dict(request.headers)
+        )
         return {"output": output}
+    except ValueError as e:
+        raise HTTPException(401, detail=str(e)) from e
     except KeyError as e:
         raise HTTPException(404, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(500, detail=str(e)) from e
 ```
+
+`handle_execute_from_request` validates the worker JWT assertion (when `OMNIAGENT_INTERNAL_KEY` is set) and injects `context` into `ToolInput`. Your tool functions receive the consumer's opaque context blob automatically.
 
 Tools must be stateless — consecutive calls in the same session may hit different replicas.
 
@@ -293,11 +308,11 @@ SESSION=$(curl -s -X POST http://localhost:8080/sessions \
   -H "Content-Type: application/json" \
   -d '{"agent_name": "support-bot"}' | jq -r .id)
 
-# Send a message
+# Send a message (with optional context — forwarded to tools)
 curl -X POST http://localhost:8080/sessions/$SESSION/run \
   -H "X-OmniAgent-Key: <key>" \
   -H "Content-Type: application/json" \
-  -d '{"prompt": "Charge $50 to card tok_visa"}'
+  -d '{"prompt": "Charge $50 to card tok_visa", "context": {"user_id": "u1", "tenant": "t1"}}'
 # → 202 Accepted
 
 # Stream events (SSE)

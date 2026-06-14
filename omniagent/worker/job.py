@@ -4,9 +4,11 @@ import asyncio
 import json
 import logging
 import os
+import time
 from typing import Any
 
 import httpx
+import jwt
 import procrastinate
 from procrastinate import PsycopgConnector
 
@@ -36,6 +38,33 @@ def _get_http_client() -> httpx.AsyncClient:
 def _internal_headers() -> dict[str, str]:
     """Headers for CP-internal calls — uses INTERNAL_KEY, never shared externally."""
     return {"X-OmniAgent-Key": INTERNAL_KEY}
+
+
+def _make_assertion(session_id: str, tool_name: str) -> str:
+    """Mint a short-lived JWT assertion for worker → service auth.
+
+    Services verify this with verify_worker_assertion() using the same INTERNAL_KEY.
+    """
+    now = int(time.time())
+    return jwt.encode(
+        {
+            "iss": "omniagent-worker",
+            "session_id": session_id,
+            "tool": tool_name,
+            "iat": now,
+            "exp": now + 60,
+        },
+        INTERNAL_KEY,
+        algorithm="HS256",
+    )
+
+
+def _worker_service_headers(session_id: str, tool_name: str) -> dict[str, str]:
+    """Headers the worker sends to external services on /execute."""
+    return {
+        "X-OmniAgent-Assertion": _make_assertion(session_id, tool_name),
+        "X-OmniAgent-Session-Id": session_id,
+    }
 
 
 async def _fetch_session_config(session_id: str) -> dict[str, Any]:
@@ -103,6 +132,7 @@ async def _tool_executor(
     input_data: dict,
     tool_snapshot: dict[str, Any],
     harness: str = "unknown",
+    context: Any = None,
 ) -> dict:
     tool = tool_snapshot.get(tool_name)
     if not tool:
@@ -114,9 +144,15 @@ async def _tool_executor(
 
     local_name = tool_name.split(".", 1)[-1] if "." in tool_name else tool_name
 
+    body: dict[str, Any] = {"tool": local_name, "input": input_data}
+    if context is not None:
+        body["context"] = context
+        body["session_id"] = session_id
+
     resp = await _get_http_client().post(
         execute_url,
-        json={"tool": local_name, "input": input_data},
+        json=body,
+        headers=_worker_service_headers(session_id, tool_name),
         timeout=35,
     )
 
@@ -196,6 +232,7 @@ def _build_system_prompt(config: dict[str, Any]) -> str:
 async def run_agent_job(session_id: str, payload: str) -> None:
     data = json.loads(payload)
     history = data.get("history", [])
+    context: Any = data.get("context")
 
     config = await _fetch_session_config(session_id)
     harness = config["harness"]
@@ -207,7 +244,9 @@ async def run_agent_job(session_id: str, payload: str) -> None:
     llm_api_key = os.environ.get(f"OMNIAGENT_{harness.upper()}_API_KEY")
 
     async def tool_exec(tool_name: str, input_data: dict) -> dict:
-        output = await _tool_executor(session_id, tool_name, input_data, tool_snapshot, harness)
+        output = await _tool_executor(
+            session_id, tool_name, input_data, tool_snapshot, harness, context
+        )
         await _emit_event(
             session_id,
             {

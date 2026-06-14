@@ -3,8 +3,7 @@ import os
 import sys
 
 import uvicorn
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from fastapi import FastAPI, HTTPException, Request
 
 import omniagent
 from omniagent import ToolInput, ToolOutput, tool
@@ -308,24 +307,22 @@ async def estimate_flight(inp: FlightInput) -> FlightOutput:
 
 app = FastAPI()
 
-
-class ExecuteRequest(BaseModel):
-    tool: str
-    input: dict
-
-
 logger = logging.getLogger(__name__)
 
 
 @app.post("/execute")
-async def execute(body: ExecuteRequest):
+async def execute(request: Request):
     try:
-        output = await omniagent.handle_execute(body.tool, body.input)
+        output = await omniagent.handle_execute_from_request(
+            await request.json(), dict(request.headers)
+        )
         return {"output": output}
+    except ValueError as e:
+        raise HTTPException(401, detail=str(e)) from e
     except KeyError as e:
-        raise HTTPException(404, detail=f"Tool '{body.tool}' not found") from e
+        raise HTTPException(404, detail=str(e)) from e
     except Exception as e:
-        logger.exception("execute failed for tool=%s", body.tool)
+        logger.exception("execute failed")
         raise HTTPException(500, detail=str(e)) from e
 
 
