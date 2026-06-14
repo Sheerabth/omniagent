@@ -10,6 +10,7 @@ from typing import Any
 import pydantic_monty as monty_lib
 
 _MONTY_WORKERS = int(os.environ.get("MONTY_EXECUTOR_WORKERS", "4"))
+_MONTY_TIMEOUT = int(os.environ.get("MONTY_EXECUTION_TIMEOUT", "30"))
 _monty_executor: concurrent.futures.ThreadPoolExecutor | None = None
 
 
@@ -42,9 +43,18 @@ async def run_monty_code(
         external_fns[safe_name] = _make_sync_tool(tool_name, tool_executor)
 
     monty = monty_lib.Monty(code)
-    result = await asyncio.get_running_loop().run_in_executor(
-        _get_monty_executor(),
-        lambda: monty.run(external_functions=external_fns),
+    # Run Monty in a thread pool with a timeout.  If the timeout fires the
+    # coroutine raises TimeoutError, but the thread itself keeps running —
+    # ThreadPoolExecutor threads cannot be interrupted.  A hung thread ties up
+    # one executor worker until the process restarts.  Mitigation: increase
+    # MONTY_EXECUTOR_WORKERS to tolerate hung threads, or move Monty to a
+    # subprocess with hard-kill in the future.
+    result = await asyncio.wait_for(
+        asyncio.get_running_loop().run_in_executor(
+            _get_monty_executor(),
+            lambda: monty.run(external_functions=external_fns),
+        ),
+        timeout=_MONTY_TIMEOUT,
     )
     return result
 

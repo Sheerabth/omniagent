@@ -52,8 +52,6 @@ async def run_session(session_id: uuid.UUID, body: RunRequest, _=Depends(require
         session = await rows.fetchone()
         if not session:
             raise HTTPException(404)
-        if session["status"] == "running":
-            raise HTTPException(409, detail="Session is already running")
 
         messages = session["messages"] or []
         messages.append(
@@ -66,10 +64,19 @@ async def run_session(session_id: uuid.UUID, body: RunRequest, _=Depends(require
         if len(messages) > MAX_HISTORY_TURNS * 2:
             messages = messages[-(MAX_HISTORY_TURNS * 2) :]
 
-        await conn.execute(
-            "UPDATE sessions SET status='running', messages=%s, updated_at=NOW() WHERE id=%s",
+        # Atomically claim the session — only if not already running.
+        # Removes TOCTOU race between status check and defer_async.
+        rows = await conn.execute(
+            """
+            UPDATE sessions
+            SET status = 'running', messages = %s, updated_at = NOW()
+            WHERE id = %s AND status != 'running'
+            RETURNING id
+            """,
             (json.dumps(messages), session_id),
         )
+        if not await rows.fetchone():
+            raise HTTPException(409, detail="Session is already running")
 
         from omniagent.worker.job import run_agent_job
 
