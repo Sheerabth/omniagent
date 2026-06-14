@@ -8,8 +8,6 @@ from typing import Any
 
 import httpx
 import procrastinate
-import psycopg
-import psycopg.rows
 from procrastinate import PsycopgConnector
 
 logger = logging.getLogger(__name__)
@@ -40,10 +38,9 @@ def _headers() -> dict[str, str]:
 
 
 async def _fetch_session_config(session_id: str) -> dict[str, Any]:
-    async with await psycopg.AsyncConnection.connect(
-        os.environ.get("DATABASE_URL", ""),
-        row_factory=psycopg.rows.dict_row,
-    ) as conn:
+    from omniagent.control_plane.db import get_conn
+
+    async with get_conn() as conn:
         rows = await conn.execute(
             "SELECT agent_name, agent_version, skill_versions FROM sessions WHERE id = %s",
             (session_id,),

@@ -1,11 +1,23 @@
 """Monty sandboxed code execution for workers."""
 
 import asyncio
+import concurrent.futures
 import json
+import os
 from collections.abc import Awaitable, Callable
 from typing import Any
 
 import pydantic_monty as monty_lib
+
+_MONTY_WORKERS = int(os.environ.get("MONTY_EXECUTOR_WORKERS", "4"))
+_monty_executor: concurrent.futures.ThreadPoolExecutor | None = None
+
+
+def _get_monty_executor() -> concurrent.futures.ThreadPoolExecutor:
+    global _monty_executor
+    if _monty_executor is None:
+        _monty_executor = concurrent.futures.ThreadPoolExecutor(max_workers=_MONTY_WORKERS)
+    return _monty_executor
 
 
 def make_monty_tool(
@@ -31,7 +43,7 @@ async def run_monty_code(
 
     monty = monty_lib.Monty(code)
     result = await asyncio.get_running_loop().run_in_executor(
-        None,
+        _get_monty_executor(),
         lambda: monty.run(external_functions=external_fns),
     )
     return result
@@ -42,11 +54,7 @@ def _make_sync_tool(
     tool_executor: Callable[[str, dict], Awaitable[dict]],
 ) -> Callable:
     def sync_tool(**kwargs: Any) -> Any:
-        loop = asyncio.new_event_loop()
-        try:
-            return loop.run_until_complete(tool_executor(tool_name, kwargs))
-        finally:
-            loop.close()
+        return asyncio.run(tool_executor(tool_name, kwargs))
 
     sync_tool.__name__ = tool_name.replace(".", "__").replace("-", "_")
     return sync_tool

@@ -12,7 +12,13 @@ F = TypeVar("F", bound=Callable[..., Any])
 
 def tool(description: str | None = None) -> Callable[[F], F]:
     def decorator(fn: F) -> F:
-        hints = typing.get_type_hints(fn)
+        try:
+            hints = typing.get_type_hints(fn)
+        except NameError as e:
+            raise TypeError(
+                f"@tool function '{fn.__name__}': cannot resolve type hints ({e}). "
+                f"Add 'from __future__ import annotations' or use fully qualified types."
+            ) from e
         params = list(hints.items())
 
         input_type = next((t for k, t in params if k != "return"), None)
@@ -50,6 +56,8 @@ def tool(description: str | None = None) -> Callable[[F], F]:
             "output_schema": output_type.model_json_schema(),
         }
 
+        # Return original fn (preserves calling convention); async wrapper
+        # is stored in _local_registry for the worker to invoke.
         return fn  # type: ignore[return-value]
 
     return decorator

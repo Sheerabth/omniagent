@@ -30,14 +30,22 @@ async def _mark_session_failed(session_id: str) -> None:
 
 async def _reconcile_stuck_sessions() -> None:
     async with db.get_conn() as conn:
-        rows = await conn.execute("SELECT id FROM sessions WHERE status = 'running'")
-        stuck = await rows.fetchall()
-        for row in stuck:
-            logger.warning("reconcile: marking stuck session %s as failed", row["id"])
-            await conn.execute(
-                "UPDATE sessions SET status='failed', updated_at=NOW() WHERE id=%s",
-                (row["id"],),
-            )
+        # Advisory lock prevents race when multiple CP instances start simultaneously
+        locked = await conn.execute("SELECT pg_try_advisory_lock(hashtext('omniagent_reconcile'))")
+        if not (await locked.fetchone())["pg_try_advisory_lock"]:
+            logger.info("reconcile: another instance holds lock, skipping")
+            return
+        try:
+            rows = await conn.execute("SELECT id FROM sessions WHERE status = 'running'")
+            stuck = await rows.fetchall()
+            for row in stuck:
+                logger.warning("reconcile: marking stuck session %s as failed", row["id"])
+                await conn.execute(
+                    "UPDATE sessions SET status='failed', updated_at=NOW() WHERE id=%s",
+                    (row["id"],),
+                )
+        finally:
+            await conn.execute("SELECT pg_advisory_unlock(hashtext('omniagent_reconcile'))")
 
 
 @asynccontextmanager

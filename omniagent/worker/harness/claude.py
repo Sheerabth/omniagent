@@ -6,7 +6,13 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from claude_agent_sdk import query
-from claude_agent_sdk.types import ClaudeAgentOptions, McpSdkServerConfig
+from claude_agent_sdk.types import (
+    AssistantMessage,
+    ClaudeAgentOptions,
+    McpSdkServerConfig,
+    ResultMessage,
+    TextBlock,
+)
 from mcp.server import Server
 from mcp.types import TextContent
 from mcp.types import Tool as McpTool
@@ -52,16 +58,12 @@ class ClaudeAdapter(HarnessAdapter):
 
         final_text = ""
         async for message in query(prompt=prompt, options=options):
-            if hasattr(message, "result"):
+            if isinstance(message, ResultMessage):
                 final_text = message.result or final_text
-            elif hasattr(message, "content"):
-                content = message.content
-                if isinstance(content, str):
-                    final_text = content
-                elif isinstance(content, list):
-                    for block in content:
-                        if getattr(block, "type", None) == "text":
-                            final_text = block.text
+            elif isinstance(message, AssistantMessage):
+                for block in message.content:
+                    if isinstance(block, TextBlock):
+                        final_text = block.text
 
         return final_text
 

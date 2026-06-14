@@ -16,12 +16,17 @@ async def main() -> None:
 
     from procrastinate.worker import Worker
 
+    from omniagent.control_plane.db import close_pool, init_pool
     from omniagent.worker.job import app, run_agent_job  # noqa: F401 — registers task
+
+    await init_pool()
 
     logger.info("Worker starting, polling queue 'default'")
     async with app.open_async():
         worker = Worker(app, queues=["default"])
         await worker.run()
+
+    await close_pool()
 
 
 if __name__ == "__main__":

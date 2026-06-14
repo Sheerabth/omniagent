@@ -7,7 +7,7 @@ dependencies = [
     # control plane
     "fastapi",
     "uvicorn[standard]",
-    "psycopg[binary]",
+    "psycopg",
     "psycopg-pool",
 
     # job queue
@@ -24,11 +24,8 @@ dependencies = [
     "mcp",
 
     # crypto
-    "cryptography",
     "argon2-cffi",
 
-    # websockets
-    "websockets",
 
     # worker HTTP client
     "httpx",

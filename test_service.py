@@ -1,3 +1,6 @@
+import os
+import sys
+
 import uvicorn
 from fastapi import FastAPI
 
@@ -304,10 +307,15 @@ async def estimate_flight(inp: FlightInput) -> FlightOutput:
 app = FastAPI()
 app.include_router(omniagent.router())
 
+api_key = os.environ.get("OMNIAGENT_WORKER_SECRET")
+if not api_key:
+    print("OMNIAGENT_WORKER_SECRET environment variable required", file=sys.stderr)
+    sys.exit(1)
+
 omniagent.init(
     service="test-service",
     control_plane="http://localhost:8080",
-    api_key="b55d38cdc6574d7c1fad3ec7ab9af887bc0a3a075f739de27a8cfced9de5ee9a",
+    api_key=api_key,
     execute_url="http://localhost:8001/execute",
 )
 

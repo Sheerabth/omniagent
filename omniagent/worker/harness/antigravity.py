@@ -173,6 +173,11 @@ def _build_system_with_history(system_prompt: str, history: list[dict]) -> str:
 
 
 async def _extract_text(response: Any) -> str:
+    """Extract text content from an Antigravity response object.
+
+    Handles known response shapes: .text() coroutine, .content str/list,
+    and falls back to str() with a logged warning for unexpected types.
+    """
     if hasattr(response, "text") and callable(response.text):
         return await response.text()
     if hasattr(response, "content"):
@@ -180,5 +185,14 @@ async def _extract_text(response: Any) -> str:
         if isinstance(c, str):
             return c
         if isinstance(c, list):
-            return " ".join(getattr(part, "text", str(part)) for part in c)
+            parts = []
+            for part in c:
+                if hasattr(part, "text"):
+                    parts.append(part.text)
+                else:
+                    parts.append(str(part))
+            return " ".join(parts)
+    logger.warning(
+        "_extract_text: unexpected response type %s, falling back to str()", type(response)
+    )
     return str(response)

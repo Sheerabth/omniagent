@@ -4,25 +4,119 @@
 
 Self-hosted platform for running AI agents across multiple LLM providers. Define tools once in Pydantic — they work with any supported agent harness (Claude, Gemini/Antigravity).
 
-Your microservices annotate functions with `@tool()`. OmniAgent discovers them, routes calls, and manages agent sessions. You bring your own chat UI and hit the REST API.
+Your microservices annotate functions with `@tool`. OmniAgent discovers them, routes calls, and manages agent sessions. Use the built-in UI or hit the REST API.
 
 ---
 
 ## Architecture
 
-```
-Your services          OmniAgent
-──────────────         ──────────────────────────────
-Payment Service        Control Plane (FastAPI)
-└── @tool() fns  ────► WS server → namespace pool
-                       REST API
-                       Job queue (Procrastinate/Postgres)
-                       Secrets store (AES-256-GCM)
+### E2E Flow
 
-                       Workers (stateless pool)
-                       └── Claude / Antigravity harness
-                           └── calls tools via control plane
+**Setup: services and UI configure the platform**
+
+```mermaid
+flowchart LR
+    subgraph Service["Service"]
+        T["@tool() fns<br/>omniagent.init()<br/>omniagent.router()"]
+    end
+    subgraph UI["UI"]
+        S["Skills tab<br/>Agents tab"]
+    end
+    subgraph CP["Control Plane"]
+        R["/tools/register<br/>/skills<br/>/agents"]
+    end
+    subgraph DB["Postgres"]
+        D["tools<br/>skills<br/>agents<br/>sessions<br/>keys"]
+    end
+
+    T -- "POST /tools/register" --> R
+    S -- "POST /skills" --> R
+    S -- "POST /agents" --> R
+    R -- "INSERT" --> D
 ```
+
+**Execution: chat session run**
+
+```mermaid
+flowchart TD
+    UI["UI"] -->|"1. POST /sessions"| CP["Control Plane"]
+    CP -->|"INSERT session (status=active)"| DB["Postgres"]
+    CP -->|"session_id"| UI
+    UI -->|"2. POST /sessions/X/run"| CP
+    CP -->|"UPDATE status=running"| DB
+    CP -->|"DEFER job (Procrastinate)"| Q["Job Queue"]
+    CP -->|"202 accepted"| UI
+    UI -->|"3. GET /sessions/X/stream"| CP
+    CP <-->|"pub/sub"| Redis["Redis<br/>channel: session_X"]
+    Redis <-->|"SSE"| UI
+
+    Q -->|"dequeue"| Worker["Worker"]
+    Worker -->|"1. SELECT config"| DB
+    DB -->|"agent, skills,<br/>tools snapshot"| Worker
+    Worker -->|"2. build system prompt"| Worker
+    Worker -->|"3. adapter.run()"| Harness["Claude SDK<br/>or Antigravity"]
+    Harness -->|"LLM decides<br/>to call tool"| Tool["tool_executor()"]
+    Tool -->|"POST /execute"| Service["Service"]
+    Service -->|"output dict"| Tool
+    Tool -->|"_emit_event()"| Event["/internal/sessions/X/event"]
+    Event -->|"UPDATE tool_calls"| DB
+    Event -->|"PUBLISH"| Redis
+    Harness -->|"final text"| Result["POST /internal/sessions/X/result"]
+    Result -->|"UPDATE status=complete"| DB
+    Result -->|"PUBLISH"| Redis
+    Redis -->|"SSE: complete"| UI
+```
+
+**Internal events**
+
+```mermaid
+flowchart LR
+    Worker["Worker"] -->|"POST /internal/sessions/X/event"| CP["Control Plane"]
+    CP -->|"UPDATE sessions<br/>(tool_calls, messages)"| DB["Postgres"]
+    CP -->|"PUBLISH"| Redis["Redis"]
+    Redis -->|"SSE"| UI["UI"]
+
+    subgraph Events["Event types"]
+        E1["thinking"]
+        E2["tool_call"]
+        E3["tool_result"]
+        E4["error"]
+        E5["complete"]
+    end
+```
+
+**Auth**
+
+```mermaid
+flowchart TD
+    Req["Request + X-OmniAgent-Key"] --> Resolve["_resolve_key(key)"]
+    Resolve -->|"key == OMNIAGENT_WORKER_SECRET"| Worker["worker ✓"]
+    Resolve -->|"argon2 match<br/>client_keys table"| Client["client ✓"]
+    Resolve -->|"argon2 match<br/>service_keys table"| Service["service ✓"]
+    Resolve -->|"no match"| Deny["401"]
+```
+
+**Monty (use_monty=true)**
+
+```mermaid
+flowchart TD
+    LLM["LLM"] -->|"execute_python(code, observation)"| Monty["run_monty_code()"]
+    Monty -->|"Monty sandbox<br/>runs Python"| PyCall["get_weather(city='Tokyo')"]
+    PyCall -->|"_make_sync_tool<br/>asyncio.run(tool_executor)"| Tool["POST /execute"]
+    Tool -->|"result dict"| PyCall
+    PyCall -->|"last expression"| LLM
+```
+
+### Data flow by component
+
+| Component | Reads from | Writes to |
+|-----------|-----------|-----------|
+| **UI** | Control Plane (REST + SSE) | Control Plane (REST) |
+| **Control Plane** | Postgres (config, sessions) | Postgres, Redis (pub), Procrastinate (jobs) |
+| **Worker** | Postgres (config), Procrastinate (jobs) | Service HTTP, Control Plane (internal API) |
+| **Redis** | Control Plane (publish) | Control Plane (subscribe → SSE → UI) |
+| **Service** | Worker (HTTP POST /execute) | Worker (HTTP response) |
+| **LLM** | Worker (system prompt + history + tools) | Worker (tool calls + final text) |
 
 **Hierarchy:** `Tool` (code) → `Skill` (config) → `Agent` (config) → `Session` (runtime)
 
@@ -32,11 +126,14 @@ Payment Service        Control Plane (FastAPI)
 
 - Python 3.12+
 - PostgreSQL 14+
-- [uv](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/install.sh | sh`)
+- Redis 7+
+- [uv](https://docs.astral.sh/uv/)
 
 ---
 
-## 1. Install
+## Quick Start
+
+### 1. Install
 
 ```bash
 git clone <repo>
@@ -44,22 +141,15 @@ cd omniagent
 uv sync
 ```
 
----
-
-## 2. Postgres setup
-
-Create a database and apply the schema:
+### 2. Start infrastructure
 
 ```bash
-createdb omniagent
-psql omniagent < migrations/001_init.sql
+docker compose up -d
 ```
 
----
+Starts Postgres and Redis. Migrations auto-apply on control plane startup.
 
-## 3. Environment variables
-
-Copy `.env.example` and fill in values:
+### 3. Environment variables
 
 ```bash
 cp .env.example .env
@@ -67,71 +157,47 @@ cp .env.example .env
 
 | Variable | Required | Description |
 |---|---|---|
-| `DATABASE_URL` | ✅ | `postgresql://user:pass@localhost:5432/omniagent` |
-| `OMNIAGENT_SECRET_KEY` | ✅ | 32-byte hex string for AES-256-GCM. Generate: `python -c "import secrets; print(secrets.token_hex(32))"` |
-| `OMNIAGENT_WORKER_SECRET` | ✅ | Shared secret between workers and control plane. Generate same way. |
-| `MAX_HISTORY_TURNS` | — | Conversation history limit per session (default: `50`) |
-| `TOOL_EXECUTION_TIMEOUT` | — | Seconds before tool call times out (default: `30`) |
+| `DATABASE_URL` | ✅ | `postgresql://omniagent:omniagent@localhost:5432/omniagent` |
+| `OMNIAGENT_WORKER_SECRET` | ✅ | Shared secret between workers and control plane |
+| `OMNIAGENT_{HARNESS}_API_KEY` | — | LLM API key per harness, e.g. `OMNIAGENT_CLAUDE_API_KEY` |
+| `MAX_HISTORY_TURNS` | — | Conversation history limit (default: `50`) |
 
----
-
-## 4. Start the control plane
+### 4. Start the control plane
 
 ```bash
 uv run uvicorn omniagent.control_plane.main:app --host 0.0.0.0 --port 8080
 ```
 
-On first start it runs a reconciliation pass (marks any orphaned `running` sessions as `failed`) then begins accepting traffic.
+API docs at `http://localhost:8080/docs`. UI at `http://localhost:8080/`.
 
-API docs available at `http://localhost:8080/docs`.
+> **Bootstrap:** on fresh install, set `OMNIAGENT_WORKER_SECRET` in `.env` and use it as the initial `X-OmniAgent-Key` to create your first keys via the Settings tab in the UI.
 
----
-
-## 5. Start workers
-
-Workers are stateless — run as many as you need. Each polls the job queue independently.
+### 5. Start workers
 
 ```bash
-# terminal 2
-uv run python -m omniagent.worker
-
-# scale horizontally — just run more
 uv run python -m omniagent.worker
 ```
 
-Workers need `DATABASE_URL`, `OMNIAGENT_WORKER_SECRET`, and `OMNIAGENT_CONTROL_PLANE` (defaults to `http://localhost:8080`).
+Scale horizontally — run more instances. Each polls the job queue independently.
 
----
-
-## 6. Create a service key
-
-Before connecting a service you need a service key:
+### 6. Create a service key
 
 ```bash
 curl -X POST http://localhost:8080/settings/service-keys \
-  -H "X-OmniAgent-Key: <any-existing-key>" \
+  -H "X-OmniAgent-Key: <your-key>" \
   -H "Content-Type: application/json" \
-  -d '{"name": "payments-service"}'
+  -d '{"name": "my-service"}'
 ```
 
-Returns `{ "key": "..." }` — shown once, store it securely.
-
-> **Bootstrap problem:** on a fresh install there are no keys yet. Set `OMNIAGENT_WORKER_SECRET` on the control plane and use it as the initial `X-OmniAgent-Key` to create the first service/client key.
+Returns `{ "key": "..." }` — shown once. Use this in your service's `omniagent.init()`.
 
 ---
 
-## 7. Instrument your service
+## Instrument your service
 
-Install the SDK into your service:
-
-```bash
-uv add omniagent  # or: pip install omniagent
-```
-
-Define tools and call `init()` at startup:
+Define tools with the `@tool` decorator:
 
 ```python
-# tools.py
 from omniagent import tool, ToolInput, ToolOutput
 from pydantic import Field
 
@@ -143,45 +209,45 @@ class ChargeOutput(ToolOutput):
     transaction_id: str
 
 @tool(description="Charge a card for a given amount")
-def charge_card(input: ChargeInput) -> ChargeOutput:
-    # your business logic here
+async def charge_card(inp: ChargeInput) -> ChargeOutput:
     return ChargeOutput(transaction_id="txn_123")
 ```
 
-```python
-# main.py — called once at service startup
-import tools  # import before init() so @tool decorators run
-from omniagent import init
+Register at startup:
 
-init(
+```python
+import omniagent
+
+omniagent.init(
     service="payments",
-    namespace="billing",        # optional — tool names become billing.charge_card
-    control_plane="http://omniagent:8080",
+    namespace="billing",
+    control_plane="http://localhost:8080",
     api_key="<service-key>",
+    execute_url="http://payments-svc:8001/execute",
 )
+
+# Use the built-in FastAPI router:
+from fastapi import FastAPI
+app = FastAPI()
+app.include_router(omniagent.router())
 ```
 
-`init()` opens a persistent WebSocket to the control plane and registers all tools. The connection stays open; the control plane routes execution requests to your service over it.
-
-**Tools must be stateless.** Consecutive calls in the same session may hit different replicas.
+Tools must be stateless — consecutive calls in the same session may hit different replicas.
 
 ---
 
-## 8. Configure skills and agents
+## Configure skills and agents
 
-Skills group tools with instructions. Agents combine skills and pick a harness.
+Via UI (`http://localhost:8080/`) or API:
 
 ```bash
-# Store your LLM API key
-curl -X POST http://localhost:8080/settings/keys \
-  -H "X-OmniAgent-Key: <key>" \
-  -d '{"harness": "claude", "api_key": "sk-ant-..."}'
-
 # Create a skill
 curl -X POST http://localhost:8080/skills \
   -H "X-OmniAgent-Key: <key>" \
+  -H "Content-Type: application/json" \
   -d '{
     "name": "billing",
+    "version": "v1",
     "tool_names": ["billing.charge_card"],
     "instructions": "Use charge_card when the user wants to make a payment.",
     "system_prompt": "You have access to billing tools."
@@ -190,10 +256,12 @@ curl -X POST http://localhost:8080/skills \
 # Create an agent
 curl -X POST http://localhost:8080/agents \
   -H "X-OmniAgent-Key: <key>" \
+  -H "Content-Type: application/json" \
   -d '{
     "name": "support-bot",
+    "version": "v1",
     "harness": "claude",
-    "skill_names": ["billing"],
+    "skill_refs": {"billing": "v1"},
     "system_prompt": "You are a helpful support assistant."
   }'
 ```
@@ -202,25 +270,23 @@ Supported harnesses: `"claude"` (Claude Code SDK), `"antigravity"` (Gemini).
 
 ---
 
-## 9. Run a session
+## Run a session
 
 ```bash
-# Create session (tool schemas are snapshotted here)
+# Create session
 SESSION=$(curl -s -X POST http://localhost:8080/sessions \
   -H "X-OmniAgent-Key: <key>" \
-  -d '{"agent_id": "<agent-uuid>"}' | jq -r .id)
+  -H "Content-Type: application/json" \
+  -d '{"agent_name": "support-bot"}' | jq -r .id)
 
 # Send a message
 curl -X POST http://localhost:8080/sessions/$SESSION/run \
   -H "X-OmniAgent-Key: <key>" \
+  -H "Content-Type: application/json" \
   -d '{"prompt": "Charge $50 to card tok_visa"}'
 # → 202 Accepted
 
-# Poll for result
-curl http://localhost:8080/sessions/$SESSION/status \
-  -H "X-OmniAgent-Key: <key>"
-
-# Or stream events (SSE)
+# Stream events (SSE)
 curl -N http://localhost:8080/sessions/$SESSION/stream \
   -H "X-OmniAgent-Key: <key>"
 ```
@@ -229,43 +295,28 @@ SSE event types: `thinking`, `tool_call`, `tool_result`, `error`, `complete`.
 
 ---
 
-## 10. Create a client key (for your chat UI)
-
-```bash
-curl -X POST http://localhost:8080/settings/client-keys \
-  -H "X-OmniAgent-Key: <key>" \
-  -d '{"name": "web-ui"}'
-```
-
-Returns `{ "key": "..." }` — shown once. Pass it as `X-OmniAgent-Key` from your frontend.
-
----
-
 ## Monty (sandboxed code execution)
 
-Set `use_monty: true` on an agent to enable sandboxed Python execution. The agent gains an `execute_python` tool — code runs in Monty's interpreter with your registered tools available as Python functions. No containers needed.
-
-```bash
-curl -X POST http://localhost:8080/agents \
-  -d '{"name": "coder", "harness": "antigravity", "skill_names": [...], "use_monty": true}'
-```
+Set `use_monty: true` on an agent to enable sandboxed Python execution. The agent gains an `execute_python` tool — code runs in Monty's interpreter with your registered tools available as Python functions. The LLM writes Python, calls tools, and returns the result — all in a single turn. No containers needed.
 
 ---
 
-## Key management reference
+## Key management
 
 | Endpoint | Purpose |
 |---|---|
 | `POST /settings/client-keys` | Create key for chat UI |
 | `POST /settings/service-keys` | Create key for a microservice |
-| `POST /settings/keys` | Store LLM API key (encrypted) |
-| `GET /settings/keys` | List harnesses with stored keys (hint only) |
+| `GET /settings/client-keys` | List client keys |
+| `GET /settings/service-keys` | List service keys |
+
+LLM API keys are set via environment variables: `OMNIAGENT_CLAUDE_API_KEY` and `OMNIAGENT_ANTIGRAVITY_API_KEY`.
 
 ---
 
 ## Docker / production tips
 
 - Run multiple workers by increasing replicas — Procrastinate ensures one job = one worker.
-- Control plane can also run as multiple instances — SSE fan-out uses Postgres `LISTEN/NOTIFY`, no extra infra.
-- `OMNIAGENT_SECRET_KEY` and `OMNIAGENT_WORKER_SECRET` should come from Docker secrets or k8s secrets, not env files.
+- Control plane can run multiple instances — `pg_try_advisory_lock` prevents duplicate startup reconciliation.
+- Secrets come from environment variables — use Docker secrets or k8s secrets, not env files.
 - The `.venv` is created by `uv sync` — mount it in your image or use `uv run` directly.

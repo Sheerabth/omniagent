@@ -8,6 +8,7 @@ Key types:
 Key prefix (first 8 chars) is stored alongside hash to avoid O(n) argon2 scan.
 """
 
+import logging
 import os
 from typing import Literal
 
@@ -16,6 +17,8 @@ from fastapi.security import APIKeyHeader
 
 from omniagent.control_plane.db import get_conn
 from omniagent.control_plane.secrets import verify_key
+
+logger = logging.getLogger(__name__)
 
 _header_scheme = APIKeyHeader(name="X-OmniAgent-Key", auto_error=False)
 
@@ -43,6 +46,7 @@ async def _resolve_key(key: str) -> KeyType:
             if verify_key(key, row["key_hash"]):
                 return "service"
 
+    logger.warning("auth: no matching key found (prefix=%s)", prefix)
     raise HTTPException(status_code=401, detail="Invalid X-OmniAgent-Key")
 
 

@@ -133,16 +133,6 @@ class ServiceKeyRecord(BaseModel):
     created_at: datetime
 
 
-class LlmKeyCreate(BaseModel):
-    harness: str
-    api_key: str
-
-
-class LlmKeyRecord(BaseModel):
-    harness: str
-    key_hint: str
-
-
 # ── Internal ───────────────────────────────────────────────────────────────
 
 
