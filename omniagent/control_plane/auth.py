@@ -2,8 +2,9 @@
 
 Key types:
   internal  — matches OMNIAGENT_INTERNAL_KEY env var directly (CP ↔ Worker)
-  service   — argon2 hash in service_keys table (external services)
-  ui        — no key provided (request from CP's own UI, served same-origin)
+  api       — argon2 hash in api_keys table (services, custom UIs, bots, built-in UI)
+
+Built-in UI key is seeded as `_built-in-ui` in api_keys on startup from OMNIAGENT_API_KEY.
 
 Key prefix (first 8 chars) is stored alongside hash to avoid O(n) argon2 scan.
 """
@@ -22,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 _header_scheme = APIKeyHeader(name="X-OmniAgent-Key", auto_error=False)
 
-KeyType = Literal["internal", "service", "ui"]
+KeyType = Literal["internal", "api"]
 
 
 async def _resolve_key(key: str) -> KeyType:
@@ -32,12 +33,10 @@ async def _resolve_key(key: str) -> KeyType:
 
     prefix = key[:8]
     async with get_conn() as conn:
-        rows = await conn.execute(
-            "SELECT key_hash FROM service_keys WHERE key_prefix = %s", (prefix,)
-        )
+        rows = await conn.execute("SELECT key_hash FROM api_keys WHERE key_prefix = %s", (prefix,))
         for row in await rows.fetchall():
             if verify_key(key, row["key_hash"]):
-                return "service"
+                return "api"
 
     logger.warning("auth: no matching key found (prefix=%s)", prefix)
     raise HTTPException(status_code=401, detail="Invalid X-OmniAgent-Key")
@@ -46,7 +45,7 @@ async def _resolve_key(key: str) -> KeyType:
 async def require_any(request: Request, api_key: str | None = Security(_header_scheme)) -> KeyType:
     key = api_key or request.query_params.get("key")
     if not key:
-        return "ui"
+        raise HTTPException(status_code=401, detail="X-OmniAgent-Key header missing")
     return await _resolve_key(key)
 
 

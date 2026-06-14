@@ -329,9 +329,9 @@ async def execute(body: ExecuteRequest):
         raise HTTPException(500, detail=str(e)) from e
 
 
-api_key = os.environ.get("OMNIAGENT_SERVICE_KEY")
+api_key = os.environ.get("OMNIAGENT_API_KEY")
 if not api_key:
-    print("OMNIAGENT_SERVICE_KEY environment variable required", file=sys.stderr)
+    print("OMNIAGENT_API_KEY environment variable required", file=sys.stderr)
     sys.exit(1)
 
 omniagent.init(

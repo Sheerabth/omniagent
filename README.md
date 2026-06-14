@@ -90,11 +90,9 @@ flowchart LR
 
 ```mermaid
 flowchart TD
-    Req["Request"] --> HasKey{"X-OmniAgent-Key?"}
-    HasKey -->|"no (UI)"| Ui["ui ✓"]
-    HasKey -->|"yes"| Resolve["_resolve_key(key)"]
+    Req["Request + X-OmniAgent-Key"] --> Resolve["_resolve_key(key)"]
     Resolve -->|"key == OMNIAGENT_INTERNAL_KEY"| Internal["internal ✓"]
-    Resolve -->|"argon2 match<br/>service_keys table"| Service["service ✓"]
+    Resolve -->|"argon2 match<br/>api_keys table"| Api["api ✓"]
     Resolve -->|"no match"| Deny["401"]
 ```
 
@@ -161,7 +159,7 @@ cp .env.example .env
 |---|---|---|
 | `DATABASE_URL` | ✅ | `postgresql://omniagent:omniagent@localhost:5432/omniagent` |
 | `OMNIAGENT_INTERNAL_KEY` | ✅ | Shared secret for CP ↔ Worker communication |
-| `OMNIAGENT_SERVICE_KEY` | — | Service key for tool registration (generate via `/settings/service-keys`) |
+| `OMNIAGENT_API_KEY` | — | API key for services and external UIs (generate via `/settings/api-keys`) |
 | `OMNIAGENT_{HARNESS}_API_KEY` | — | LLM API key per harness, e.g. `OMNIAGENT_CLAUDE_API_KEY` |
 | `MAX_HISTORY_TURNS` | — | Conversation history limit (default: `50`) |
 
@@ -173,7 +171,7 @@ uv run uvicorn omniagent.control_plane.main:app --host 0.0.0.0 --port 8080
 
 API docs at `http://localhost:8080/docs`. UI at `http://localhost:8080/`.
 
-> **Bootstrap:** on fresh install, set `OMNIAGENT_INTERNAL_KEY` in `.env`. The UI auto-authenticates (same origin). To create a service key for external services, use the Settings tab in the UI.
+> **Bootstrap:** on first start, the control plane seeds a built-in UI key from `OMNIAGENT_API_KEY` into the `api_keys` table. The UI auto-authenticates — no manual setup. Create additional API keys for services or external UIs via the Settings tab.
 
 ### 5. Start workers
 
@@ -183,18 +181,18 @@ uv run python -m omniagent.worker
 
 Scale horizontally — run more instances. Each polls the job queue independently.
 
-### 6. Create a service key
+### 6. Create an API key
 
 On first run, use the internal key (from `.env`) to bootstrap:
 
 ```bash
-curl -X POST http://localhost:8080/settings/service-keys \
+curl -X POST http://localhost:8080/settings/api-keys \
   -H "X-OmniAgent-Key: $OMNIAGENT_INTERNAL_KEY" \
   -H "Content-Type: application/json" \
   -d '{"name": "my-service"}'
 ```
 
-Returns `{ "key": "..." }` — shown once. Pass this to your service as `OMNIAGENT_SERVICE_KEY`.
+Returns `{ "key": "..." }` — shown once. Pass this to your service as `OMNIAGENT_API_KEY`.
 
 ---
 
@@ -229,7 +227,7 @@ omniagent.init(
     service="payments",
     namespace="billing",
     control_plane="http://localhost:8080",
-    api_key="<service-key>",
+    api_key=os.environ["OMNIAGENT_API_KEY"],
     execute_url="http://payments-svc:8001/execute",
 )
 
@@ -321,9 +319,9 @@ Set `use_monty: true` on an agent to enable sandboxed Python execution. The agen
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /settings/service-keys` | Create key for an external service |
-| `GET /settings/service-keys` | List service keys |
-| `DELETE /settings/service-keys/{id}` | Revoke a service key |
+| `POST /settings/api-keys` | Create API key for services, custom UIs, bots |
+| `GET /settings/api-keys` | List API keys |
+| `DELETE /settings/api-keys/{id}` | Revoke an API key |
 
 LLM API keys are set via environment variables: `OMNIAGENT_CLAUDE_API_KEY` and `OMNIAGENT_ANTIGRAVITY_API_KEY`.
 

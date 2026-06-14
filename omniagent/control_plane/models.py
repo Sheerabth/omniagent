@@ -113,11 +113,11 @@ class SessionStatus(BaseModel):
 # ── Settings ───────────────────────────────────────────────────────────────
 
 
-class ServiceKeyCreate(BaseModel):
+class ApiKeyCreate(BaseModel):
     name: str
 
 
-class ServiceKeyRecord(BaseModel):
+class ApiKeyRecord(BaseModel):
     id: uuid.UUID
     name: str
     created_at: datetime

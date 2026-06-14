@@ -233,12 +233,12 @@
 <!-- SETTINGS -->
 <div id="panel-settings" class="panel">
   <div class="list-col">
-    <button class="new-btn btn-ghost" onclick="newServiceKey()">+ New Service Key</button>
-    <h2>Service Keys</h2>
-    <div id="service-keys-list"><p class="empty">Loading…</p></div>
+    <button class="new-btn btn-ghost" onclick="newApiKey()">+ New API Key</button>
+    <h2>API Keys</h2>
+    <div id="api-keys-list"><p class="empty">Loading…</p></div>
   </div>
   <div class="form-col">
-    <div id="service-key-detail" class="card" style="display:none">
+    <div id="api-key-detail" class="card" style="display:none">
       <h2 id="skd-title"></h2>
       <label>Name</label>
       <p id="skd-name" style="font-size:13px;color:#ccc"></p>
@@ -250,11 +250,11 @@
       </div>
       <div id="skd-no-key" style="margin-top:16px; padding:12px; background:#1a1a0a; border:1px solid #4a4a2a; border-radius:8px">
         <p style="font-size:12px;color:#aa9;margin-bottom:8px">Keys are argon2-hashed — cannot be retrieved after creation. Rotate to generate a replacement.</p>
-        <button class="btn-ghost" onclick="rotateServiceKey()">Rotate Key</button>
+        <button class="btn-ghost" onclick="rotateApiKey()">Rotate Key</button>
       </div>
       <div class="btn-row">
-        <button class="btn-danger" id="skd-delete-btn" onclick="deleteServiceKey()">Delete</button>
-        <button class="btn-ghost" onclick="closeServiceKeyDetail()">Close</button>
+        <button class="btn-danger" id="skd-delete-btn" onclick="deleteApiKey()">Delete</button>
+        <button class="btn-ghost" onclick="closeApiKeyDetail()">Close</button>
       </div>
     </div>
   </div>
@@ -263,11 +263,13 @@
 <div id="toast" class="toast"></div>
 
 <script>
-let allTools = [], allSkills = [], allAgents = [], allServiceKeys = [];
+let allTools = [], allSkills = [], allAgents = [], allApiKeys = [];
 let currentTab = 'tools';
 
+const UI_API_KEY = document.querySelector('meta[name="omniagent-api-key"]')?.content || '';
+
 function headers() {
-  return { 'Content-Type': 'application/json' };
+  return { 'Content-Type': 'application/json', 'X-OmniAgent-Key': UI_API_KEY };
 }
 
 async function api(method, path, body) {
@@ -308,89 +310,89 @@ async function loadAll() {
       api('GET', '/agents'),
     ]);
     renderTools(); renderSkills(); renderAgents(); renderChatAgents();
-    if (currentTab === 'settings') loadServiceKeys();
+    if (currentTab === 'settings') loadApiKeys();
   } catch(e) {
     toast('Load failed: ' + e.message, false);
   }
 }
 
-async function loadServiceKeys() {
+async function loadApiKeys() {
   try {
-    allServiceKeys = await api('GET', '/settings/service-keys');
-    renderServiceKeys();
+    allApiKeys = await api('GET', '/settings/api-keys');
+    renderApiKeys();
   } catch(e) {
     toast('Load failed: ' + e.message, false);
   }
 }
 
-function renderServiceKeys() {
-  const el = document.getElementById('service-keys-list');
-  if (!allServiceKeys.length) { el.innerHTML = '<p class="empty">No service keys yet</p>'; return; }
-  el.innerHTML = allServiceKeys.map(k => `
-    <div class="item" onclick="showServiceKey('${k.id}')">
+function renderApiKeys() {
+  const el = document.getElementById('api-keys-list');
+  if (!allApiKeys.length) { el.innerHTML = '<p class="empty">No API keys yet</p>'; return; }
+  el.innerHTML = allApiKeys.map(k => `
+    <div class="item" onclick="showApiKey('${k.id}')">
       <div class="name">${escHtml(k.name)}</div>
       <div class="sub">${new Date(k.created_at).toLocaleString()}</div>
     </div>`).join('');
 }
 
-function newServiceKey() {
+function newApiKey() {
   const name = prompt('Key name:');
   if (!name) return;
-  api('POST', '/settings/service-keys', { name }).then(r => {
-    allServiceKeys.push({id: r.id, name: r.name, created_at: r.created_at});
-    document.getElementById('skd-title').textContent = 'Service Key';
+  api('POST', '/settings/api-keys', { name }).then(r => {
+    allApiKeys.push({id: r.id, name: r.name, created_at: r.created_at});
+    document.getElementById('skd-title').textContent = 'API Key';
     document.getElementById('skd-name').textContent = r.name;
     document.getElementById('skd-created').textContent = new Date(r.created_at).toLocaleString();
     document.getElementById('skd-new-key').style.display = 'block';
     document.getElementById('skd-key').textContent = r.key;
-    document.getElementById('service-key-detail').style.display = 'block';
-    renderServiceKeys();
+    document.getElementById('api-key-detail').style.display = 'block';
+    renderApiKeys();
     toast('Key created');
   }).catch(e => toast(e.message, false));
 }
 
-function showServiceKey(id) {
-  const k = allServiceKeys.find(x => x.id === id);
+function showApiKey(id) {
+  const k = allApiKeys.find(x => x.id === id);
   if (!k) return;
-  document.getElementById('skd-title').textContent = 'Service Key';
+  document.getElementById('skd-title').textContent = 'API Key';
   document.getElementById('skd-name').textContent = k.name;
   document.getElementById('skd-created').textContent = new Date(k.created_at).toLocaleString();
   document.getElementById('skd-new-key').style.display = 'none';
   document.getElementById('skd-no-key').style.display = 'block';
-  document.getElementById('service-key-detail').style.display = 'block';
+  document.getElementById('api-key-detail').style.display = 'block';
   document.getElementById('skd-delete-btn').dataset.keyId = k.id;
 }
 
-function closeServiceKeyDetail() {
-  document.getElementById('service-key-detail').style.display = 'none';
+function closeApiKeyDetail() {
+  document.getElementById('api-key-detail').style.display = 'none';
 }
 
-async function rotateServiceKey() {
+async function rotateApiKey() {
   const id = document.getElementById('skd-delete-btn').dataset.keyId;
-  const k = allServiceKeys.find(x => x.id === id);
+  const k = allApiKeys.find(x => x.id === id);
   if (!id || !confirm(`Replace key for '${k.name}'? The old key will be invalidated.`)) return;
   try {
     // Delete old, create new with same name
-    await api('DELETE', '/settings/service-keys/' + id);
-    const r = await api('POST', '/settings/service-keys', { name: k.name });
+    await api('DELETE', '/settings/api-keys/' + id);
+    const r = await api('POST', '/settings/api-keys', { name: k.name });
     document.getElementById('skd-no-key').style.display = 'none';
     document.getElementById('skd-new-key').style.display = 'block';
     document.getElementById('skd-key').textContent = r.key;
     document.getElementById('skd-created').textContent = new Date(r.created_at).toLocaleString();
     document.getElementById('skd-delete-btn').dataset.keyId = r.id;
     toast('Key rotated — copy the new key');
-    loadServiceKeys();
+    loadApiKeys();
   } catch(e) { toast(e.message, false); }
 }
 
-async function deleteServiceKey() {
+async function deleteApiKey() {
   const id = document.getElementById('skd-delete-btn').dataset.keyId;
-  if (!id || !confirm('Delete this service key?')) return;
+  if (!id || !confirm('Delete this API key?')) return;
   try {
-    await api('DELETE', '/settings/service-keys/' + id);
+    await api('DELETE', '/settings/api-keys/' + id);
     toast('Key deleted');
-    closeServiceKeyDetail();
-    loadServiceKeys();
+    closeApiKeyDetail();
+    loadApiKeys();
   } catch(e) { toast(e.message, false); }
 }
 
@@ -690,7 +692,7 @@ async function chatSend() {
 
 function streamSession(sessionId) {
   if (chatSSE) chatSSE.close();
-  chatSSE = new EventSource('/sessions/' + sessionId + '/stream');
+  chatSSE = new EventSource('/sessions/' + sessionId + '/stream?key=' + encodeURIComponent(UI_API_KEY));
   const myRunId = chatRunId;
 
   chatSSE.onmessage = async (e) => {

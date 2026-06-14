@@ -33,7 +33,8 @@ def _get_http_client() -> httpx.AsyncClient:
     return _http_client
 
 
-def _headers() -> dict[str, str]:
+def _internal_headers() -> dict[str, str]:
+    """Headers for CP-internal calls — uses INTERNAL_KEY, never shared externally."""
     return {"X-OmniAgent-Key": INTERNAL_KEY}
 
 
@@ -130,7 +131,7 @@ async def _emit_event(session_id: str, event: dict) -> None:
         await _get_http_client().post(
             f"{CONTROL_PLANE}/internal/sessions/{session_id}/event",
             json=event,
-            headers=_headers(),
+            headers=_internal_headers(),
             timeout=5,
         )
     except Exception as exc:
@@ -248,7 +249,7 @@ async def run_agent_job(session_id: str, payload: str) -> None:
         await _get_http_client().post(
             f"{CONTROL_PLANE}/internal/sessions/{session_id}/result",
             json={"result": result},
-            headers=_headers(),
+            headers=_internal_headers(),
             timeout=10,
         )
 

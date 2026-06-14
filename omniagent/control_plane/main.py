@@ -4,8 +4,8 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse
 
 from omniagent.control_plane import db, queue, redis_client
 from omniagent.control_plane.routes import agents, internal, sessions, settings, skills, sse, tools
@@ -14,6 +14,29 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 _UI_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "ui")
+
+
+async def _seed_builtin_ui_key() -> str:
+    """Ensure a fixed API key exists for the built-in UI. Uses OMNIAGENT_API_KEY
+    from env (stable across restarts). Upserts so the table doesn't grow."""
+    from omniagent.control_plane.secrets import generate_key, hash_key
+
+    api_key = os.environ.get("OMNIAGENT_API_KEY") or generate_key()
+    key_hash = hash_key(api_key)
+    key_prefix = api_key[:8]
+
+    async with db.get_conn() as conn:
+        await conn.execute(
+            """
+            INSERT INTO api_keys (name, key_hash, key_prefix)
+            VALUES ('_built-in-ui', %s, %s)
+            ON CONFLICT (name) DO UPDATE
+              SET key_hash    = EXCLUDED.key_hash,
+                  key_prefix  = EXCLUDED.key_prefix
+            """,
+            (key_hash, key_prefix),
+        )
+    return api_key
 
 
 async def _mark_session_failed(session_id: str) -> None:
@@ -57,6 +80,7 @@ async def lifespan(app: FastAPI):
     await run_migrations(dsn)
     await db.init_pool()
     await redis_client.init_redis()
+    app.state.ui_api_key = await _seed_builtin_ui_key()
     await _reconcile_stuck_sessions()
     queue.set_session_fail_callback(_mark_session_failed)
 
@@ -71,8 +95,13 @@ app = FastAPI(title="OmniAgent Control Plane", lifespan=lifespan)
 
 
 @app.get("/", include_in_schema=False)
-async def ui():
-    return FileResponse(os.path.join(_UI_DIR, "index.html"))
+async def ui(request: Request):
+    path = os.path.join(_UI_DIR, "index.html")
+    with open(path) as f:
+        html = f.read()
+    key_meta = f'<meta name="omniagent-api-key" content="{request.app.state.ui_api_key}">'
+    html = html.replace('<meta charset="UTF-8">', f'<meta charset="UTF-8">\n{key_meta}')
+    return HTMLResponse(html)
 
 
 app.include_router(tools.router)
