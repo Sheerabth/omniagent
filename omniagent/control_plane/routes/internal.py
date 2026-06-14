@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from omniagent.control_plane.auth import require_worker
+from omniagent.control_plane.auth import require_internal
 from omniagent.control_plane.db import get_conn
 from omniagent.control_plane.models import SessionEventRequest, SessionResultRequest
 from omniagent.control_plane.redis_client import get_redis
@@ -18,7 +18,7 @@ router = APIRouter(prefix="/internal", tags=["internal"])
 async def post_session_result(
     session_id: uuid.UUID,
     body: SessionResultRequest,
-    _=Depends(require_worker),
+    _=Depends(require_internal),
 ):
     async with get_conn() as conn:
         rows = await conn.execute("SELECT messages FROM sessions WHERE id = %s", (session_id,))
@@ -45,7 +45,7 @@ async def post_session_result(
 async def post_session_event(
     session_id: uuid.UUID,
     body: SessionEventRequest,
-    _=Depends(require_worker),
+    _=Depends(require_internal),
 ):
     if body.type == "error":
         async with get_conn() as conn:

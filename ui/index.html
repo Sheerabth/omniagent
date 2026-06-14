@@ -9,8 +9,6 @@
   body { font-family: system-ui, sans-serif; background: #0f0f0f; color: #e0e0e0; min-height: 100vh; }
   header { background: #1a1a1a; border-bottom: 1px solid #2a2a2a; padding: 12px 24px; display: flex; align-items: center; gap: 16px; }
   header h1 { font-size: 16px; font-weight: 600; color: #fff; letter-spacing: .5px; }
-  #key-input { background: #111; border: 1px solid #333; color: #e0e0e0; padding: 6px 10px; border-radius: 6px; font-size: 13px; width: 340px; font-family: monospace; }
-  #key-input::placeholder { color: #555; }
   .tabs { display: flex; gap: 2px; padding: 16px 24px 0; border-bottom: 1px solid #222; }
   .tab { padding: 8px 18px; cursor: pointer; border-radius: 6px 6px 0 0; font-size: 13px; color: #888; background: transparent; border: none; }
   .tab.active { background: #1e1e1e; color: #fff; border: 1px solid #2a2a2a; border-bottom: 1px solid #1e1e1e; }
@@ -106,7 +104,6 @@
 
 <header>
   <h1>OmniAgent</h1>
-  <input id="key-input" type="password" placeholder="X-OmniAgent-Key" oninput="onKeyChange(this.value)">
 </header>
 
 <div class="tabs">
@@ -114,13 +111,14 @@
   <button class="tab" onclick="switchTab('skills')">Skills</button>
   <button class="tab" onclick="switchTab('agents')">Agents</button>
   <button class="tab" onclick="switchTab('chat')">Chat</button>
+  <button class="tab" onclick="switchTab('settings')">Settings</button>
 </div>
 
 <!-- TOOLS -->
 <div id="panel-tools" class="panel active">
   <div class="list-col">
     <h2>Registered Tools</h2>
-    <div id="tools-list"><p class="empty">Enter API key to load</p></div>
+    <div id="tools-list"><p class="empty">Loading…</p></div>
   </div>
   <div class="form-col">
     <div id="tool-detail" class="card" style="display:none">
@@ -138,7 +136,7 @@
   <div class="list-col">
     <button class="new-btn btn-ghost" onclick="newSkill()">+ New Skill</button>
     <h2>Skills</h2>
-    <div id="skills-list"><p class="empty">Enter API key to load</p></div>
+    <div id="skills-list"><p class="empty">Loading…</p></div>
   </div>
   <div class="form-col">
     <div id="skill-form" class="card" style="display:none">
@@ -172,7 +170,7 @@
   <div class="list-col">
     <button class="new-btn btn-ghost" onclick="newAgent()">+ New Agent</button>
     <h2>Agents</h2>
-    <div id="agents-list"><p class="empty">Enter API key to load</p></div>
+    <div id="agents-list"><p class="empty">Loading…</p></div>
   </div>
   <div class="form-col">
     <div id="agent-form" class="card" style="display:none">
@@ -232,23 +230,44 @@
   </div>
 </div>
 
+<!-- SETTINGS -->
+<div id="panel-settings" class="panel">
+  <div class="list-col">
+    <button class="new-btn btn-ghost" onclick="newServiceKey()">+ New Service Key</button>
+    <h2>Service Keys</h2>
+    <div id="service-keys-list"><p class="empty">Loading…</p></div>
+  </div>
+  <div class="form-col">
+    <div id="service-key-detail" class="card" style="display:none">
+      <h2 id="skd-title"></h2>
+      <label>Name</label>
+      <p id="skd-name" style="font-size:13px;color:#ccc"></p>
+      <label>Created</label>
+      <p id="skd-created" style="font-size:13px;color:#ccc"></p>
+      <div id="skd-new-key" style="display:none; margin-top:16px; padding:12px; background:#0a1a0a; border:1px solid #2a5c2a; border-radius:8px">
+        <p style="font-size:12px;color:#6fcf6f;margin-bottom:6px">Key shown once — copy it now:</p>
+        <pre id="skd-key" style="background:#111;padding:8px;border-radius:4px;font-size:12px;color:#e0e0e0;word-break:break-all;white-space:pre-wrap"></pre>
+      </div>
+      <div id="skd-no-key" style="margin-top:16px; padding:12px; background:#1a1a0a; border:1px solid #4a4a2a; border-radius:8px">
+        <p style="font-size:12px;color:#aa9;margin-bottom:8px">Keys are argon2-hashed — cannot be retrieved after creation. Rotate to generate a replacement.</p>
+        <button class="btn-ghost" onclick="rotateServiceKey()">Rotate Key</button>
+      </div>
+      <div class="btn-row">
+        <button class="btn-danger" id="skd-delete-btn" onclick="deleteServiceKey()">Delete</button>
+        <button class="btn-ghost" onclick="closeServiceKeyDetail()">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div id="toast" class="toast"></div>
 
 <script>
-let API_KEY = localStorage.getItem('omniagent_key') || '';
-let allTools = [], allSkills = [], allAgents = [];
+let allTools = [], allSkills = [], allAgents = [], allServiceKeys = [];
 let currentTab = 'tools';
 
-document.getElementById('key-input').value = API_KEY;
-
-function onKeyChange(v) {
-  API_KEY = v;
-  localStorage.setItem('omniagent_key', v);
-  loadAll();
-}
-
 function headers() {
-  return { 'Content-Type': 'application/json', 'X-OmniAgent-Key': API_KEY };
+  return { 'Content-Type': 'application/json' };
 }
 
 async function api(method, path, body) {
@@ -274,7 +293,7 @@ function toast(msg, ok = true) {
 function switchTab(tab) {
   currentTab = tab;
   document.querySelectorAll('.tab').forEach((el, i) => {
-    el.classList.toggle('active', ['tools','skills','agents','chat'][i] === tab);
+    el.classList.toggle('active', ['tools','skills','agents','chat','settings'][i] === tab);
   });
   document.querySelectorAll('.panel').forEach(el => el.classList.remove('active'));
   document.getElementById('panel-' + tab).classList.add('active');
@@ -282,7 +301,6 @@ function switchTab(tab) {
 }
 
 async function loadAll() {
-  if (!API_KEY) return;
   try {
     [allTools, allSkills, allAgents] = await Promise.all([
       api('GET', '/tools'),
@@ -290,9 +308,90 @@ async function loadAll() {
       api('GET', '/agents'),
     ]);
     renderTools(); renderSkills(); renderAgents(); renderChatAgents();
+    if (currentTab === 'settings') loadServiceKeys();
   } catch(e) {
     toast('Load failed: ' + e.message, false);
   }
+}
+
+async function loadServiceKeys() {
+  try {
+    allServiceKeys = await api('GET', '/settings/service-keys');
+    renderServiceKeys();
+  } catch(e) {
+    toast('Load failed: ' + e.message, false);
+  }
+}
+
+function renderServiceKeys() {
+  const el = document.getElementById('service-keys-list');
+  if (!allServiceKeys.length) { el.innerHTML = '<p class="empty">No service keys yet</p>'; return; }
+  el.innerHTML = allServiceKeys.map(k => `
+    <div class="item" onclick="showServiceKey('${k.id}')">
+      <div class="name">${escHtml(k.name)}</div>
+      <div class="sub">${new Date(k.created_at).toLocaleString()}</div>
+    </div>`).join('');
+}
+
+function newServiceKey() {
+  const name = prompt('Key name:');
+  if (!name) return;
+  api('POST', '/settings/service-keys', { name }).then(r => {
+    allServiceKeys.push({id: r.id, name: r.name, created_at: r.created_at});
+    document.getElementById('skd-title').textContent = 'Service Key';
+    document.getElementById('skd-name').textContent = r.name;
+    document.getElementById('skd-created').textContent = new Date(r.created_at).toLocaleString();
+    document.getElementById('skd-new-key').style.display = 'block';
+    document.getElementById('skd-key').textContent = r.key;
+    document.getElementById('service-key-detail').style.display = 'block';
+    renderServiceKeys();
+    toast('Key created');
+  }).catch(e => toast(e.message, false));
+}
+
+function showServiceKey(id) {
+  const k = allServiceKeys.find(x => x.id === id);
+  if (!k) return;
+  document.getElementById('skd-title').textContent = 'Service Key';
+  document.getElementById('skd-name').textContent = k.name;
+  document.getElementById('skd-created').textContent = new Date(k.created_at).toLocaleString();
+  document.getElementById('skd-new-key').style.display = 'none';
+  document.getElementById('skd-no-key').style.display = 'block';
+  document.getElementById('service-key-detail').style.display = 'block';
+  document.getElementById('skd-delete-btn').dataset.keyId = k.id;
+}
+
+function closeServiceKeyDetail() {
+  document.getElementById('service-key-detail').style.display = 'none';
+}
+
+async function rotateServiceKey() {
+  const id = document.getElementById('skd-delete-btn').dataset.keyId;
+  const k = allServiceKeys.find(x => x.id === id);
+  if (!id || !confirm(`Replace key for '${k.name}'? The old key will be invalidated.`)) return;
+  try {
+    // Delete old, create new with same name
+    await api('DELETE', '/settings/service-keys/' + id);
+    const r = await api('POST', '/settings/service-keys', { name: k.name });
+    document.getElementById('skd-no-key').style.display = 'none';
+    document.getElementById('skd-new-key').style.display = 'block';
+    document.getElementById('skd-key').textContent = r.key;
+    document.getElementById('skd-created').textContent = new Date(r.created_at).toLocaleString();
+    document.getElementById('skd-delete-btn').dataset.keyId = r.id;
+    toast('Key rotated — copy the new key');
+    loadServiceKeys();
+  } catch(e) { toast(e.message, false); }
+}
+
+async function deleteServiceKey() {
+  const id = document.getElementById('skd-delete-btn').dataset.keyId;
+  if (!id || !confirm('Delete this service key?')) return;
+  try {
+    await api('DELETE', '/settings/service-keys/' + id);
+    toast('Key deleted');
+    closeServiceKeyDetail();
+    loadServiceKeys();
+  } catch(e) { toast(e.message, false); }
 }
 
 // ── Tools ──────────────────────────────────────────────────────────────────
@@ -591,8 +690,7 @@ async function chatSend() {
 
 function streamSession(sessionId) {
   if (chatSSE) chatSSE.close();
-  const url = '/sessions/' + sessionId + '/stream';
-  chatSSE = new EventSource(url + '?key=' + encodeURIComponent(API_KEY));
+  chatSSE = new EventSource('/sessions/' + sessionId + '/stream');
   const myRunId = chatRunId;
 
   chatSSE.onmessage = async (e) => {
@@ -726,11 +824,8 @@ function escHtml(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
-// ── SSE auth via query param ────────────────────────────────────────────────
-// EventSource doesn't support custom headers; pass key as ?key=
-
 // init
-if (API_KEY) loadAll();
+loadAll();
 </script>
 </body>
 </html>

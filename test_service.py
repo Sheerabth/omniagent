@@ -1,8 +1,10 @@
+import logging
 import os
 import sys
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 
 import omniagent
 from omniagent import ToolInput, ToolOutput, tool
@@ -305,11 +307,31 @@ async def estimate_flight(inp: FlightInput) -> FlightOutput:
 # ── App ────────────────────────────────────────────────────────────────────
 
 app = FastAPI()
-app.include_router(omniagent.router())
 
-api_key = os.environ.get("OMNIAGENT_WORKER_SECRET")
+
+class ExecuteRequest(BaseModel):
+    tool: str
+    input: dict
+
+
+logger = logging.getLogger(__name__)
+
+
+@app.post("/execute")
+async def execute(body: ExecuteRequest):
+    try:
+        output = await omniagent.handle_execute(body.tool, body.input)
+        return {"output": output}
+    except KeyError as e:
+        raise HTTPException(404, detail=f"Tool '{body.tool}' not found") from e
+    except Exception as e:
+        logger.exception("execute failed for tool=%s", body.tool)
+        raise HTTPException(500, detail=str(e)) from e
+
+
+api_key = os.environ.get("OMNIAGENT_SERVICE_KEY")
 if not api_key:
-    print("OMNIAGENT_WORKER_SECRET environment variable required", file=sys.stderr)
+    print("OMNIAGENT_SERVICE_KEY environment variable required", file=sys.stderr)
     sys.exit(1)
 
 omniagent.init(

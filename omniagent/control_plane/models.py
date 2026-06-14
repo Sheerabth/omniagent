@@ -113,16 +113,6 @@ class SessionStatus(BaseModel):
 # ── Settings ───────────────────────────────────────────────────────────────
 
 
-class ClientKeyCreate(BaseModel):
-    name: str
-
-
-class ClientKeyRecord(BaseModel):
-    id: uuid.UUID
-    name: str
-    created_at: datetime
-
-
 class ServiceKeyCreate(BaseModel):
     name: str
 
@@ -144,8 +134,8 @@ class SessionEventRequest(BaseModel):
     type: str
     content: str | None = None
     tool: str | None = None
-    input: dict[str, Any] | None = None
-    output: dict[str, Any] | None = None
+    input: Any = None
+    output: Any = None
     success: bool | None = None
     reason: str | None = None
     harness: str | None = None

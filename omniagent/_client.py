@@ -63,28 +63,3 @@ async def handle_execute(tool: str, input: dict) -> dict:
     parsed = entry["input"].model_validate(input)
     result = await entry["fn"](parsed)
     return result.model_dump()
-
-
-def router():
-    """Return a FastAPI router with POST /execute mounted. Optional convenience."""
-    from fastapi import APIRouter, HTTPException
-    from pydantic import BaseModel
-
-    class ExecuteRequest(BaseModel):
-        tool: str
-        input: dict
-
-    r = APIRouter()
-
-    @r.post("/execute")
-    async def execute(body: ExecuteRequest):
-        try:
-            output = await handle_execute(body.tool, body.input)
-            return {"output": output}
-        except KeyError as e:
-            raise HTTPException(404, detail=str(e)) from e
-        except Exception as e:
-            logger.exception("execute failed for tool=%s", body.tool)
-            raise HTTPException(500, detail=str(e)) from e
-
-    return r

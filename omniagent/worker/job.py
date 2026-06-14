@@ -13,7 +13,7 @@ from procrastinate import PsycopgConnector
 logger = logging.getLogger(__name__)
 
 CONTROL_PLANE = os.environ.get("OMNIAGENT_CONTROL_PLANE", "http://localhost:8080")
-WORKER_SECRET = os.environ.get("OMNIAGENT_WORKER_SECRET", "")
+INTERNAL_KEY = os.environ.get("OMNIAGENT_INTERNAL_KEY", "")
 
 app = procrastinate.App(connector=PsycopgConnector(conninfo=os.environ.get("DATABASE_URL", "")))
 
@@ -34,7 +34,7 @@ def _get_http_client() -> httpx.AsyncClient:
 
 
 def _headers() -> dict[str, str]:
-    return {"X-OmniAgent-Key": WORKER_SECRET}
+    return {"X-OmniAgent-Key": INTERNAL_KEY}
 
 
 async def _fetch_session_config(session_id: str) -> dict[str, Any]:

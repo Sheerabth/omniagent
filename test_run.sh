@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -e
 
-KEY="${1:?usage: ./test_run.sh <api-key>}"
+KEY="${1:-}"
 BASE="http://localhost:8080"
 
 echo "==> upserting skill"

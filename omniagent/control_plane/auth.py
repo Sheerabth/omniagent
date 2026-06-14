@@ -1,9 +1,9 @@
 """X-OmniAgent-Key validation middleware.
 
 Key types:
-  worker  — matches OMNIAGENT_WORKER_SECRET env var directly
-  client  — argon2 hash in client_keys table
-  service — argon2 hash in service_keys table
+  internal  — matches OMNIAGENT_INTERNAL_KEY env var directly (CP ↔ Worker)
+  service   — argon2 hash in service_keys table (external services)
+  ui        — no key provided (request from CP's own UI, served same-origin)
 
 Key prefix (first 8 chars) is stored alongside hash to avoid O(n) argon2 scan.
 """
@@ -22,23 +22,16 @@ logger = logging.getLogger(__name__)
 
 _header_scheme = APIKeyHeader(name="X-OmniAgent-Key", auto_error=False)
 
-KeyType = Literal["worker", "client", "service"]
+KeyType = Literal["internal", "service", "ui"]
 
 
 async def _resolve_key(key: str) -> KeyType:
-    worker_secret = os.environ.get("OMNIAGENT_WORKER_SECRET", "")
-    if worker_secret and key == worker_secret:
-        return "worker"
+    internal_key = os.environ.get("OMNIAGENT_INTERNAL_KEY", "")
+    if internal_key and key == internal_key:
+        return "internal"
 
     prefix = key[:8]
     async with get_conn() as conn:
-        rows = await conn.execute(
-            "SELECT key_hash FROM client_keys WHERE key_prefix = %s", (prefix,)
-        )
-        for row in await rows.fetchall():
-            if verify_key(key, row["key_hash"]):
-                return "client"
-
         rows = await conn.execute(
             "SELECT key_hash FROM service_keys WHERE key_prefix = %s", (prefix,)
         )
@@ -53,13 +46,15 @@ async def _resolve_key(key: str) -> KeyType:
 async def require_any(request: Request, api_key: str | None = Security(_header_scheme)) -> KeyType:
     key = api_key or request.query_params.get("key")
     if not key:
-        raise HTTPException(status_code=401, detail="X-OmniAgent-Key header missing")
+        return "ui"
     return await _resolve_key(key)
 
 
-async def require_worker(request: Request, api_key: str | None = Security(_header_scheme)) -> None:
+async def require_internal(
+    request: Request, api_key: str | None = Security(_header_scheme)
+) -> None:
     if not api_key:
         raise HTTPException(status_code=401, detail="X-OmniAgent-Key header missing")
-    worker_secret = os.environ.get("OMNIAGENT_WORKER_SECRET", "")
-    if not worker_secret or api_key != worker_secret:
-        raise HTTPException(status_code=403, detail="Worker key required")
+    internal_key = os.environ.get("OMNIAGENT_INTERNAL_KEY", "")
+    if not internal_key or api_key != internal_key:
+        raise HTTPException(status_code=403, detail="Internal key required")
