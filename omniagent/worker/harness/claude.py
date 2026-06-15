@@ -17,7 +17,11 @@ from mcp.server import Server
 from mcp.types import TextContent
 from mcp.types import Tool as McpTool
 
-from omniagent.worker.harness.base import EXECUTE_PYTHON_DESCRIPTION, HarnessAdapter
+from omniagent.worker.harness.base import (
+    EXECUTE_PYTHON_DESCRIPTION,
+    HarnessAdapter,
+    make_monty_executor,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -108,45 +112,32 @@ def _build_mcp_server(
     async def list_tools() -> list[McpTool]:
         return tools
 
+    monty_handler = (
+        make_monty_executor(tool_snapshot, tool_executor, emit_event) if use_monty else None
+    )
+
     @server.call_tool()
     async def call_tool(name: str, arguments: dict) -> list[TextContent]:
-        if name == "execute_python" and use_monty:
-            from omniagent.worker.monty import run_monty_code
-
-            await emit_event({"type": "tool_call", "tool": "execute_python", "input": arguments})
+        if name == "execute_python":
+            if not monty_handler:
+                return [
+                    TextContent(
+                        type="text", text=json.dumps({"error": "monty not enabled on this agent"})
+                    )
+                ]
             try:
-                result = await run_monty_code(
+                result = await monty_handler(
                     code=arguments.get("code", ""),
-                    tool_snapshot=tool_snapshot,
-                    tool_executor=tool_executor,
+                    observation=arguments.get("observation", ""),
                 )
-                await emit_event(
-                    {
-                        "type": "tool_result",
-                        "tool": "execute_python",
-                        "success": True,
-                        "output": result,
-                    }
-                )
-                return [TextContent(type="text", text=json.dumps(result))]
+                return [TextContent(type="text", text=result)]
             except Exception as exc:
-                await emit_event(
-                    {
-                        "type": "tool_result",
-                        "tool": "execute_python",
-                        "success": False,
-                        "error": str(exc),
-                    }
-                )
                 return [TextContent(type="text", text=json.dumps({"error": str(exc)}))]
 
-        await emit_event({"type": "tool_call", "tool": name, "input": arguments})
         try:
             output = await tool_executor(name, arguments)
-            await emit_event({"type": "tool_result", "tool": name, "success": True})
             return [TextContent(type="text", text=json.dumps(output))]
         except Exception as exc:
-            await emit_event({"type": "tool_result", "tool": name, "success": False})
             return [TextContent(type="text", text=json.dumps({"error": str(exc)}))]
 
     return server

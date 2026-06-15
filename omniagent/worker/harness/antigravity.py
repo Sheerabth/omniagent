@@ -17,7 +17,7 @@ except ImportError as exc:
         "Verify LocalAgentConfig and policy import paths for the installed package version."
     ) from exc
 
-from omniagent.worker.harness.base import EXECUTE_PYTHON_DESCRIPTION, HarnessAdapter
+from omniagent.worker.harness.base import HarnessAdapter, make_monty_executor
 
 logger = logging.getLogger(__name__)
 
@@ -75,8 +75,7 @@ class AntigravityAdapter(HarnessAdapter):
         emit_event: Callable[[dict], Awaitable[None]],
     ) -> list[Callable]:
         return [
-            _make_tool_fn(name, schema, tool_executor, emit_event)
-            for name, schema in tool_snapshot.items()
+            _make_tool_fn(name, schema, tool_executor) for name, schema in tool_snapshot.items()
         ]
 
     def _build_monty_tool(
@@ -85,50 +84,13 @@ class AntigravityAdapter(HarnessAdapter):
         tool_executor: Callable[[str, dict], Awaitable[dict]],
         emit_event: Callable[[dict], Awaitable[None]],
     ) -> Callable:
-        from omniagent.worker.monty import make_monty_tool
-
-        inner = make_monty_tool(tool_snapshot, tool_executor)
-
-        async def execute_python(code: str, observation: str) -> str:
-            await emit_event(
-                {
-                    "type": "tool_call",
-                    "tool": "execute_python",
-                    "input": {"code": code, "observation": observation},
-                }
-            )
-            try:
-                result = await inner(code=code, observation=observation)
-                await emit_event(
-                    {
-                        "type": "tool_result",
-                        "tool": "execute_python",
-                        "success": True,
-                        "output": result,
-                    }
-                )
-                return result
-            except Exception as exc:
-                await emit_event(
-                    {
-                        "type": "tool_result",
-                        "tool": "execute_python",
-                        "success": False,
-                        "error": str(exc),
-                    }
-                )
-                raise
-
-        execute_python.__name__ = "execute_python"
-        execute_python.__doc__ = EXECUTE_PYTHON_DESCRIPTION
-        return execute_python
+        return make_monty_executor(tool_snapshot, tool_executor, emit_event)
 
 
 def _make_tool_fn(
     tool_name: str,
     schema: dict[str, Any],
     tool_executor: Callable[[str, dict], Awaitable[dict]],
-    emit_event: Callable[[dict], Awaitable[None]],
 ) -> Callable:
     input_schema = schema.get("input_schema", {})
     props = input_schema.get("properties", {})
@@ -136,16 +98,11 @@ def _make_tool_fn(
 
     async def tool_fn(**kwargs: Any) -> str:
         input_data = dict(kwargs)
-        await emit_event({"type": "tool_call", "tool": tool_name, "input": input_data})
         try:
             output = await tool_executor(tool_name, input_data)
             return json.dumps(output)
         except Exception as exc:
-            err = str(exc)
-            await emit_event(
-                {"type": "tool_result", "tool": tool_name, "success": False, "error": err}
-            )
-            return json.dumps({"error": err})
+            return json.dumps({"error": str(exc)})
 
     params = [
         inspect.Parameter("observation", inspect.Parameter.POSITIONAL_OR_KEYWORD, annotation=str)

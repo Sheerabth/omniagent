@@ -345,8 +345,9 @@ async def auth_hook(tool_name: str, input_data: dict, auth_context):
         if not auth_context or not auth_context.get("user_id"):
             raise PermissionError(f"Tool '{tool_name}' requires auth_context.user_id")
         logger.info(
-            "auth: tool=%s user=%s tenant=%s",
+            "auth: tool=%s keys=%s user=%s tenant=%s",
             tool_name,
+            list(input_data.keys()) if input_data else [],
             auth_context.get("user_id"),
             auth_context.get("tenant", "unknown"),
         )
@@ -354,7 +355,11 @@ async def auth_hook(tool_name: str, input_data: dict, auth_context):
 
 async def audit_hook(tool_name: str, input_data: dict, auth_context, output: dict):
     logger.info(
-        "audit: tool=%s user=%s ok", tool_name, auth_context and auth_context.get("user_id", "anon")
+        "audit: tool=%s in_keys=%s out_keys=%s user=%s ok",
+        tool_name,
+        list(input_data.keys()) if input_data else [],
+        list(output.keys()) if output else [],
+        auth_context and auth_context.get("user_id", "anon"),
     )
 
 

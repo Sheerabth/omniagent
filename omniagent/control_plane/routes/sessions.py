@@ -95,6 +95,19 @@ async def run_session(session_id: uuid.UUID, body: RunRequest, _=Depends(require
     return JSONResponse({"session_id": str(session_id)}, status_code=202)
 
 
+@router.get("", response_model=list[SessionRecord])
+async def list_sessions(_=Depends(require_any)):
+    async with get_conn() as conn:
+        rows = await conn.execute("SELECT * FROM sessions ORDER BY created_at DESC LIMIT 100")
+        return await rows.fetchall()
+
+
+@router.delete("/{session_id}", status_code=204)
+async def delete_session(session_id: uuid.UUID, _=Depends(require_any)):
+    async with get_conn() as conn:
+        await conn.execute("DELETE FROM sessions WHERE id = %s", (session_id,))
+
+
 @router.get("/{session_id}/status", response_model=SessionStatus)
 async def get_session_status(session_id: uuid.UUID, _=Depends(require_any)):
     async with get_conn() as conn:

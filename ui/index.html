@@ -81,6 +81,16 @@
   #chat-sidebar { width: 300px; flex-shrink: 0; border-left: 1px solid #1e1e1e; display: flex; flex-direction: column; overflow: hidden; }
   #chat-sidebar-header { padding: 10px 14px; font-size: 10px; color: #444; text-transform: uppercase; letter-spacing: .8px; border-bottom: 1px solid #1a1a1a; flex-shrink: 0; }
   #chat-sidebar-items { flex: 1; overflow-y: auto; }
+  .sess-item { padding: 8px 12px; border-bottom: 1px solid #171717; font-size: 12px; cursor: pointer; display: flex; align-items: center; gap: 8px; }
+  .sess-item:hover { background: #1a1a1a; }
+  .sess-item.active { background: #1a2240; border-left: 2px solid #4f7ef8; }
+  .sess-item .sess-id { font-family: monospace; font-size: 10px; color: #555; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sess-item .sess-status { font-size: 10px; padding: 1px 6px; border-radius: 3px; }
+  .sess-item .sess-status.running { color: #6fcf6f; background: #1a2a1a; }
+  .sess-item .sess-status.complete { color: #8ab4f8; background: #1a2040; }
+  .sess-item .sess-status.failed { color: #f87171; background: #2a1010; }
+  .sess-delete { font-size: 10px; color: #555; cursor: pointer; padding: 2px 4px; }
+  .sess-delete:hover { color: #f87171; }
   .stool { border-bottom: 1px solid #171717; padding: 10px 12px; font-size: 12px; }
   .stool-header { display: flex; align-items: center; gap: 7px; }
   .stool-icon { font-size: 13px; flex-shrink: 0; }
@@ -222,7 +232,12 @@
   <div id="chat-body">
     <div id="chat-messages"></div>
     <div id="chat-sidebar">
-      <div id="chat-sidebar-header">Tool Activity</div>
+      <div id="chat-sidebar-header" style="display:flex;justify-content:space-between">
+        <span id="chat-sidebar-title">Sessions</span>
+        <span style="cursor:pointer;font-size:10px" onclick="toggleSidebarSection()">▶</span>
+      </div>
+      <div id="chat-sessions-list" style="max-height:200px;overflow-y:auto"></div>
+      <div id="chat-sidebar-tools-header" style="padding:10px 14px;font-size:10px;color:#444;text-transform:uppercase;letter-spacing:.8px;border-top:1px solid #1a1a1a">Tool Activity</div>
       <div id="chat-sidebar-items"></div>
     </div>
   </div>
@@ -265,7 +280,7 @@
 <div id="toast" class="toast"></div>
 
 <script>
-let allTools = [], allSkills = [], allAgents = [], allApiKeys = [];
+let allTools = [], allSkills = [], allAgents = [], allApiKeys = [], allSessions = [];
 let currentTab = 'tools';
 
 const UI_API_KEY = document.querySelector('meta[name="omniagent-api-key"]')?.content || '';
@@ -653,6 +668,73 @@ function chatAgentChanged() {
   document.getElementById('chat-messages').innerHTML = '';
   document.getElementById('chat-sidebar-items').innerHTML = '';
   document.getElementById('chat-send').disabled = true;
+  loadSessions();
+}
+
+async function loadSessions() {
+  try {
+    allSessions = await api('GET', '/sessions') || [];
+    renderSessions();
+  } catch(e) { /* no sessions endpoint yet */ }
+}
+
+function renderSessions() {
+  const raw = document.getElementById('chat-agent-select').value;
+  if (!raw) return;
+  const {n: agentName} = JSON.parse(raw);
+  const agentSessions = allSessions.filter(s => s.agent_name === agentName);
+  const el = document.getElementById('chat-sessions-list');
+  if (!agentSessions.length) { el.innerHTML = '<div style="padding:8px 12px;font-size:11px;color:#555">No sessions</div>'; return; }
+  el.innerHTML = agentSessions.map(s => `
+    <div class="sess-item${s.id === chatSessionId ? ' active' : ''}" onclick="switchToSession('${s.id}')">
+      <span class="sess-status ${s.status}">${s.status}</span>
+      <span class="sess-id">${s.id.substring(0,8)}…</span>
+      <span class="sess-delete" onclick="event.stopPropagation();deleteSession('${s.id}')">✕</span>
+    </div>`).join('');
+}
+
+async function switchToSession(id) {
+  chatSSE && chatSSE.close();
+  chatSSE = null;
+  chatSessionId = id;
+  document.getElementById('chat-session-label').textContent = 'session: ' + id;
+  document.getElementById('chat-messages').innerHTML = '';
+  document.getElementById('chat-sidebar-items').innerHTML = '';
+  document.getElementById('chat-send').disabled = false;
+  try {
+    const status = await api('GET', '/sessions/' + id + '/status');
+    (status.messages || []).forEach(m => appendMsg(m.role, m.content));
+    (status.tool_calls || []).forEach(tc => {
+      const div = document.createElement('div');
+      div.className = 'stool';
+      const icon = tc.success ? '✓' : '✕';
+      const cls = tc.success ? 'ok' : 'err';
+      div.innerHTML = `<div class="stool-header"><span class="stool-icon">${icon}</span><span class="stool-name">${escHtml(tc.tool_name)}</span><span class="stool-status ${cls}">${tc.success ? 'done' : 'failed'}</span></div>`;
+      if (tc.input) div.appendChild(sidebarSection('input', tc.input));
+      if (tc.output) div.appendChild(sidebarSection('output', tc.output));
+      document.getElementById('chat-sidebar-items').appendChild(div);
+    });
+  } catch(e) { toast('Load failed: ' + e.message, false); }
+  renderSessions();
+}
+
+async function deleteSession(id) {
+  if (!confirm('Delete session ' + id.substring(0,8) + '?')) return;
+  try {
+    await api('DELETE', '/sessions/' + id);
+    if (chatSessionId === id) {
+      chatSessionId = null;
+      document.getElementById('chat-messages').innerHTML = '';
+      document.getElementById('chat-send').disabled = true;
+    }
+    toast('Session deleted');
+    loadSessions();
+  } catch(e) { toast(e.message, false); }
+}
+
+function toggleSidebarSection() {
+  const list = document.getElementById('chat-sessions-list');
+  list.style.display = list.style.display === 'none' ? 'block' : 'none';
 }
 
 async function chatNewSession() {
@@ -667,6 +749,7 @@ async function chatNewSession() {
     chatSessionId = s.id;
     document.getElementById('chat-session-label').textContent = 'session: ' + s.id;
     document.getElementById('chat-send').disabled = false;
+    loadSessions();
     toast('Session created');
   } catch(e) { toast(e.message, false); }
 }
