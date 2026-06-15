@@ -13,14 +13,18 @@ class ToolSnapshot(BaseModel):
     input_schema: dict[str, Any]
     output_schema: dict[str, Any]
     execute_url: str = ""
+    skill_context: Any = None
+    skill_name: str = ""
 
 
 class SkillSnapshot(BaseModel):
     system_prompt: str = ""
     instructions: str = ""
+    skill_context: Any = None
 
 
 class SessionConfig(BaseModel):
+    agent_name: str
     harness: str
     model: str
     system_prompt: str
@@ -39,6 +43,7 @@ class ToolCallEvent(BaseEvent):
     tool: str
     input: dict[str, Any]
     harness: str | None = None
+    skill_name: str | None = None
 
 
 class ToolResultEvent(BaseEvent):
@@ -49,6 +54,7 @@ class ToolResultEvent(BaseEvent):
     output: Any = None
     harness: str | None = None
     error: str | None = None
+    skill_name: str | None = None
 
 
 class SystemPromptEvent(BaseEvent):

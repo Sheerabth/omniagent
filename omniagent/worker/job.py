@@ -12,6 +12,7 @@ import jwt
 import procrastinate
 from procrastinate import PsycopgConnector
 
+from omniagent._models import ToolInput
 from omniagent.control_plane.models import MessageRecord
 from omniagent.worker.models import (
     BaseEvent,
@@ -105,16 +106,22 @@ async def _fetch_session_config(session_id: str) -> SessionConfig:
 
         skills: list[SkillSnapshot] = []
         all_tool_names: list[str] = []
-        for skill_name, skill_version in skill_versions.items():
+        tool_skill_context: dict[str, Any] = {}
+        tool_skill_name: dict[str, str] = {}
+        for sname, skill_version in skill_versions.items():
             rows = await conn.execute(
                 "SELECT * FROM skills WHERE name = %s AND version = %s",
-                (skill_name, skill_version),
+                (sname, skill_version),
             )
             skill = await rows.fetchone()
             if not skill:
-                raise RuntimeError(f"skill_version_deleted:{skill_name}:{skill_version}")
-            skills.append(SkillSnapshot.model_validate(dict(skill)))
-            all_tool_names.extend(skill["tool_names"])
+                raise RuntimeError(f"skill_version_deleted:{sname}:{skill_version}")
+            skill_snap = SkillSnapshot.model_validate(dict(skill))
+            skills.append(skill_snap)
+            for t in skill["tool_names"]:
+                all_tool_names.append(t)
+                tool_skill_context[t] = skill_snap.skill_context
+                tool_skill_name[t] = sname
 
         tool_snapshot: dict[str, ToolSnapshot] = {}
         if all_tool_names:
@@ -126,9 +133,12 @@ async def _fetch_session_config(session_id: str) -> SessionConfig:
                     input_schema=tool["input_schema"],
                     output_schema=tool["output_schema"],
                     execute_url=tool["execute_url"] or "",
+                    skill_context=tool_skill_context.get(tool["name"]),
+                    skill_name=tool_skill_name.get(tool["name"], ""),
                 )
 
     return SessionConfig(
+        agent_name=agent_name,
         harness=agent["harness"],
         model=agent["model"],
         system_prompt=agent["system_prompt"],
@@ -145,6 +155,7 @@ async def _tool_executor(
     input_data: dict[str, Any],
     tool_snapshot: dict[str, ToolSnapshot],
     auth_context: Any = None,
+    agent_name: str = "",
 ) -> dict[str, Any]:
     tool = tool_snapshot.get(tool_name)
     if not tool:
@@ -160,6 +171,12 @@ async def _tool_executor(
     if auth_context is not None:
         body["auth_context"] = auth_context
         body["session_id"] = session_id
+    if tool.skill_context is not None:
+        body["skill_context"] = tool.skill_context
+    if agent_name:
+        body["agent_name"] = agent_name
+    if tool.skill_name:
+        body["skill_name"] = tool.skill_name
 
     resp = await _get_http_client().post(
         execute_url,
@@ -202,13 +219,18 @@ def _build_system_prompt(config: SessionConfig, llm_context: dict[str, Any] | No
             lines.append(skill.instructions)
 
     if config.tool_snapshot and not config.use_monty:
-        lines.append("\nAvailable tools:")
+        # Group tools by skill for clearer LLM context.
+        by_skill: dict[str, list[tuple[str, ToolSnapshot]]] = {}
         for tool_name, schema in config.tool_snapshot.items():
-            lines.append(f"- {tool_name}: {schema.description}")
-            if schema.input_schema:
-                lines.append(f"  Input schema: {json.dumps(schema.input_schema)}")
-            if schema.output_schema:
-                lines.append(f"  Output schema: {json.dumps(schema.output_schema)}")
+            by_skill.setdefault(schema.skill_name or "", []).append((tool_name, schema))
+        for skill_name, tools in by_skill.items():
+            lines.append(f"\n## Skill: {skill_name}" if skill_name else "\nAvailable tools:")
+            for tool_name, schema in tools:
+                lines.append(f"- {tool_name}: {schema.description}")
+                if schema.input_schema:
+                    lines.append(f"  Input schema: {json.dumps(schema.input_schema)}")
+                if schema.output_schema:
+                    lines.append(f"  Output schema: {json.dumps(schema.output_schema)}")
 
     if config.tool_snapshot and config.use_monty:
         lines.append(
@@ -221,9 +243,7 @@ def _build_system_prompt(config: SessionConfig, llm_context: dict[str, Any] | No
         for tool_name, schema in config.tool_snapshot.items():
             fn = _safe_tool_name(tool_name)
             props = schema.input_schema.get("properties", {})
-            params = ", ".join(
-                f"{k}=..." for k in props if k not in ("observation", "auth_context", "llm_context")
-            )
+            params = ", ".join(f"{k}=..." for k in props if k not in ToolInput.model_fields)
             out_schema = schema.output_schema or {}
             out_props = out_schema.get("properties", out_schema)
             out_info = json.dumps(out_props) if out_props else "dict"
@@ -262,9 +282,12 @@ async def run_agent_job(session_id: str, payload: str) -> None:
     llm_api_key = os.environ.get(f"OMNIAGENT_{harness.upper()}_API_KEY")
 
     async def tool_exec(tool_name: str, input_data: dict[str, Any]) -> dict[str, Any]:
+        skill_name = tool_snapshot[tool_name].skill_name
         await _emit_event(
             session_id,
-            ToolCallEvent(tool=tool_name, input=input_data, harness=harness),
+            ToolCallEvent(
+                tool=tool_name, input=input_data, harness=harness, skill_name=skill_name or None
+            ),
         )
         output = await _tool_executor(
             session_id,
@@ -272,11 +295,17 @@ async def run_agent_job(session_id: str, payload: str) -> None:
             input_data,
             tool_snapshot,
             auth_context=auth_context,
+            agent_name=config.agent_name,
         )
         await _emit_event(
             session_id,
             ToolResultEvent(
-                tool=tool_name, success=True, input=input_data, output=output, harness=harness
+                tool=tool_name,
+                success=True,
+                input=input_data,
+                output=output,
+                harness=harness,
+                skill_name=skill_name or None,
             ),
         )
         return output

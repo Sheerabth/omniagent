@@ -36,7 +36,7 @@ _after_hooks: list[AfterHook] = []
 def register_before_execute(hook: BeforeHook) -> None:
     """Register an async callback invoked before every tool execution.
 
-    Signature: async def hook(tool: str, input: dict, auth_context: Any) -> None
+    Signature: async def hook(tool: str, input: dict, auth_context: Any, metadata: dict) -> None
 
     Raise an exception to block execution.  Hooks run in registration order.
     """
@@ -46,7 +46,7 @@ def register_before_execute(hook: BeforeHook) -> None:
 def register_after_execute(hook: AfterHook) -> None:
     """Register an async callback invoked after every tool execution.
 
-    Signature: async def hook(tool: str, input: dict, auth_context: Any, output: dict) -> None
+    Signature: async def hook(tool: str, input: dict, auth_context: Any, output: dict, metadata: dict) -> None
 
     Hooks always run — even if the tool function raised.  Exceptions from
     after-hooks are logged and swallowed (they cannot change the result).
@@ -120,6 +120,9 @@ async def handle_execute(body: dict[str, Any], headers: dict[str, str]) -> dict[
         tool=body["tool"],
         input=body["input"],
         auth_context=body.get("auth_context"),
+        skill_context=body.get("skill_context"),
+        agent_name=body.get("agent_name", ""),
+        skill_name=body.get("skill_name", ""),
         worker_assertion=headers.get("x-omniagent-assertion"),
     )
 
@@ -128,6 +131,9 @@ async def _handle_execute_impl(
     tool: str,
     input: dict[str, Any],
     auth_context: Any = None,
+    skill_context: Any = None,
+    agent_name: str = "",
+    skill_name: str = "",
     *,
     worker_assertion: str | None = None,
 ) -> dict[str, Any]:
@@ -148,6 +154,12 @@ async def _handle_execute_impl(
     merged = {**input}
     if auth_context is not None:
         merged["auth_context"] = auth_context
+    if skill_context is not None:
+        merged["skill_context"] = skill_context
+    if agent_name:
+        merged["agent_name"] = agent_name
+    if skill_name:
+        merged["skill_name"] = skill_name
     parsed = entry.input.model_validate(merged)
 
     output: dict[str, Any] = {}

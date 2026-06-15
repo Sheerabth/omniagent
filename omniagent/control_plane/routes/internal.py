@@ -77,6 +77,7 @@ async def post_session_event(
                             input=event_data.get("input") or {},
                             output=event_data.get("output"),
                             harness=event_data.get("harness"),
+                            skill_name=event_data.get("skill_name"),
                             timestamp=datetime.now(UTC),
                             success=event_data.get("success", True),
                             error=event_data.get("error"),

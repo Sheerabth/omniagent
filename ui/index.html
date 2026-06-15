@@ -92,6 +92,7 @@
   .sess-delete { font-size: 10px; color: #555; cursor: pointer; padding: 2px 4px; }
   .sess-delete:hover { color: #f87171; }
   .stool { border-bottom: 1px solid #171717; padding: 10px 12px; font-size: 12px; }
+  .stool-skill-header { padding: 6px 12px 3px; font-size: 10px; font-weight: 600; color: #666; text-transform: uppercase; letter-spacing: 0.5px; border-top: 1px solid #1e1e1e; margin-top: 4px; }
   .stool-header { display: flex; align-items: center; gap: 7px; }
   .stool-icon { font-size: 13px; flex-shrink: 0; }
   .stool-name { color: #8ab4f8; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -164,6 +165,8 @@
       <textarea id="skill-instructions" placeholder="Instructions for the agent on how to use these tools"></textarea>
       <label>System Prompt</label>
       <textarea id="skill-system" placeholder="Optional system prompt injected with this skill"></textarea>
+      <label>Skill Context <span style="color:#888;font-size:11px">(JSON — passed to every tool call, visible as inp.skill_context)</span></label>
+      <textarea id="skill-context" placeholder='{"sender": "support@co.com"}' style="font-family:monospace;font-size:12px"></textarea>
       <label>Tools</label>
       <div id="skill-tools-checkboxes" class="checkbox-grid"></div>
       <div class="btn-row">
@@ -451,6 +454,7 @@ function newSkill() {
   document.getElementById('skill-version').value = '';
   document.getElementById('skill-instructions').value = '';
   document.getElementById('skill-system').value = '';
+  document.getElementById('skill-context').value = '';
   document.getElementById('skill-delete-btn').style.display = 'none';
   renderToolCheckboxes('skill-tools-checkboxes', []);
   document.getElementById('skill-form').style.display = 'block';
@@ -463,6 +467,7 @@ function editSkill(name, version) {
   document.getElementById('skill-version').value = s.version;
   document.getElementById('skill-instructions').value = s.instructions || '';
   document.getElementById('skill-system').value = s.system_prompt || '';
+  document.getElementById('skill-context').value = s.skill_context != null ? JSON.stringify(s.skill_context, null, 2) : '';
   document.getElementById('skill-delete-btn').style.display = 'inline-block';
   renderToolCheckboxes('skill-tools-checkboxes', s.tool_names || []);
   document.getElementById('skill-form').style.display = 'block';
@@ -487,12 +492,19 @@ function getChecked(containerId) {
 }
 
 async function saveSkill() {
+  const skillContextRaw = document.getElementById('skill-context').value.trim();
+  let skill_context = null;
+  if (skillContextRaw) {
+    try { skill_context = JSON.parse(skillContextRaw); }
+    catch { toast('Skill Context must be valid JSON', false); return; }
+  }
   const body = {
     name: document.getElementById('skill-name').value.trim(),
     version: document.getElementById('skill-version').value.trim() || 'v1',
     instructions: document.getElementById('skill-instructions').value.trim(),
     system_prompt: document.getElementById('skill-system').value.trim(),
     tool_names: getChecked('skill-tools-checkboxes'),
+    skill_context,
   };
   if (!body.name) { toast('Name required', false); return; }
   try {
@@ -704,15 +716,28 @@ async function switchToSession(id) {
   try {
     const status = await api('GET', '/sessions/' + id + '/status');
     (status.messages || []).forEach(m => appendMsg(m.role, m.content));
+    const toolCallsBySkill = {};
     (status.tool_calls || []).forEach(tc => {
-      const div = document.createElement('div');
-      div.className = 'stool';
-      const icon = tc.success ? '✓' : '✕';
-      const cls = tc.success ? 'ok' : 'err';
-      div.innerHTML = `<div class="stool-header"><span class="stool-icon">${icon}</span><span class="stool-name">${escHtml(tc.tool_name)}</span><span class="stool-status ${cls}">${tc.success ? 'done' : 'failed'}</span></div>`;
-      if (tc.input) div.appendChild(sidebarSection('input', tc.input));
-      if (tc.output) div.appendChild(sidebarSection('output', tc.output));
-      document.getElementById('chat-sidebar-items').appendChild(div);
+      const key = tc.skill_name || '';
+      (toolCallsBySkill[key] = toolCallsBySkill[key] || []).push(tc);
+    });
+    Object.entries(toolCallsBySkill).forEach(([skillName, calls]) => {
+      if (skillName) {
+        const header = document.createElement('div');
+        header.className = 'stool-skill-header';
+        header.textContent = skillName;
+        document.getElementById('chat-sidebar-items').appendChild(header);
+      }
+      calls.forEach(tc => {
+        const div = document.createElement('div');
+        div.className = 'stool';
+        const icon = tc.success ? '✓' : '✕';
+        const cls = tc.success ? 'ok' : 'err';
+        div.innerHTML = `<div class="stool-header"><span class="stool-icon">${icon}</span><span class="stool-name">${escHtml(tc.tool_name)}</span><span class="stool-status ${cls}">${tc.success ? 'done' : 'failed'}</span></div>`;
+        if (tc.input) div.appendChild(sidebarSection('input', tc.input));
+        if (tc.output) div.appendChild(sidebarSection('output', tc.output));
+        document.getElementById('chat-sidebar-items').appendChild(div);
+      });
     });
   } catch(e) { toast('Load failed: ' + e.message, false); }
   renderSessions();

@@ -1,0 +1,1 @@
+ALTER TABLE skills ADD COLUMN IF NOT EXISTS skill_context jsonb DEFAULT NULL;

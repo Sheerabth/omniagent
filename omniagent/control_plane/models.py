@@ -30,6 +30,7 @@ class SkillCreate(BaseModel):
     tool_names: list[str]
     instructions: str = ""
     system_prompt: str = ""
+    skill_context: Any = None
 
 
 class SkillRecord(BaseModel):
@@ -39,6 +40,7 @@ class SkillRecord(BaseModel):
     tool_names: list[str]
     instructions: str
     system_prompt: str
+    skill_context: Any = None
     created_at: datetime
     updated_at: datetime
 
@@ -105,6 +107,7 @@ class ToolCallEntry(BaseModel):
     input: dict[str, Any]
     output: Any
     harness: str | None = None
+    skill_name: str | None = None
     timestamp: datetime
     success: bool
     error: str | None = None
@@ -162,3 +165,4 @@ class SessionEventRequest(BaseModel):
     reason: str | None = None
     harness: str | None = None
     error: str | None = None
+    skill_name: str | None = None

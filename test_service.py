@@ -29,9 +29,12 @@ class WeatherOutput(ToolOutput):
 )
 async def get_weather(inp: WeatherInput) -> WeatherOutput:
     logger.info(
-        "get_weather: city=%s user=%s",
+        "get_weather: city=%s user=%s agent=%s skill=%s skill_context=%s",
         inp.city,
         inp.auth_context and inp.auth_context.get("user_id", "anon"),
+        inp.agent_name or "—",
+        inp.skill_name or "—",
+        inp.skill_context,
     )
     data = {
         "london": WeatherOutput(temperature_c=12, condition="rainy", humidity_pct=82, wind_kmh=25),

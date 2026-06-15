@@ -1,3 +1,5 @@
+import json
+
 import psycopg
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -24,16 +26,24 @@ async def create_skill(body: SkillCreate, _=Depends(require_any)) -> SkillRecord
         await _validate_tool_names(conn, body.tool_names)
         rows = await conn.execute(
             """
-            INSERT INTO skills (name, version, tool_names, instructions, system_prompt)
-            VALUES (%s, %s, %s, %s, %s)
+            INSERT INTO skills (name, version, tool_names, instructions, system_prompt, skill_context)
+            VALUES (%s, %s, %s, %s, %s, %s)
             ON CONFLICT (name, version) DO UPDATE
               SET tool_names    = EXCLUDED.tool_names,
                   instructions  = EXCLUDED.instructions,
                   system_prompt = EXCLUDED.system_prompt,
+                  skill_context = EXCLUDED.skill_context,
                   updated_at    = NOW()
             RETURNING *
             """,
-            (body.name, body.version, body.tool_names, body.instructions, body.system_prompt),
+            (
+                body.name,
+                body.version,
+                body.tool_names,
+                body.instructions,
+                body.system_prompt,
+                json.dumps(body.skill_context) if body.skill_context is not None else None,
+            ),
         )
         return SkillRecord.model_validate(dict(await rows.fetchone()))
 
