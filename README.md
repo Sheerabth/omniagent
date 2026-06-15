@@ -247,7 +247,7 @@ app = FastAPI()
 @app.post("/execute")
 async def execute(request: Request):
     try:
-        output = await omniagent.handle_execute_from_request(
+        output = await omniagent.handle_execute(
             await request.json(), dict(request.headers)
         )
         return {"output": output}
@@ -259,7 +259,7 @@ async def execute(request: Request):
         raise HTTPException(500, detail=str(e)) from e
 ```
 
-`handle_execute_from_request` validates the worker JWT assertion (when `OMNIAGENT_INTERNAL_KEY` is set) and injects `context` into `ToolInput`. Your tool functions receive the consumer's opaque context blob automatically.
+`handle_execute` validates the worker JWT assertion (when `OMNIAGENT_INTERNAL_KEY` is set) and injects `context` into `ToolInput`. Your tool functions receive the consumer's opaque context blob automatically.
 
 Tools must be stateless — consecutive calls in the same session may hit different replicas.
 

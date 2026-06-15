@@ -2,6 +2,7 @@
 
 import logging
 import os
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import httpx
@@ -11,6 +12,32 @@ from omniagent._registry import _local_registry
 logger = logging.getLogger(__name__)
 
 _config: dict[str, Any] = {}
+
+BeforeHook = Callable[[str, dict, Any], Awaitable[None]]
+AfterHook = Callable[[str, dict, Any, dict], Awaitable[None]]
+_before_hooks: list[BeforeHook] = []
+_after_hooks: list[AfterHook] = []
+
+
+def register_before_execute(hook: BeforeHook) -> None:
+    """Register an async callback invoked before every tool execution.
+
+    Signature: async def hook(tool: str, input: dict, context: Any) -> None
+
+    Raise an exception to block execution.  Hooks run in registration order.
+    """
+    _before_hooks.append(hook)
+
+
+def register_after_execute(hook: AfterHook) -> None:
+    """Register an async callback invoked after every tool execution.
+
+    Signature: async def hook(tool: str, input: dict, context: Any, output: dict) -> None
+
+    Hooks always run — even if the tool function raised.  Exceptions from
+    after-hooks are logged and swallowed (they cannot change the result).
+    """
+    _after_hooks.append(hook)
 
 
 def init(
@@ -60,26 +87,7 @@ def init(
     logger.info("omniagent: registered %d tools at %s", len(tools), execute_url)
 
 
-async def handle_execute(
-    tool: str,
-    input: dict,
-    context: Any = None,
-    *,
-    worker_assertion: str | None = None,
-) -> dict:
-    """Low-level — call after parsing the request yourself.
-
-    Prefer handle_execute_from_request() for the common case.
-    """
-    return await _handle_execute_impl(
-        tool=tool,
-        input=input,
-        context=context,
-        worker_assertion=worker_assertion,
-    )
-
-
-async def handle_execute_from_request(body: dict, headers: dict[str, str]) -> dict:
+async def handle_execute(body: dict, headers: dict[str, str]) -> dict:
     """Call from your /execute route — passes parsed body and headers.
 
     Extracts tool, input, context from body and X-OmniAgent-Assertion from headers.
@@ -108,12 +116,16 @@ async def _handle_execute_impl(
     *,
     worker_assertion: str | None = None,
 ) -> dict:
-    """Core implementation — validates assertion, looks up tool, calls function."""
+    """Core implementation — validates assertion, runs hooks, calls tool function."""
     internal_key: str = _config.get("internal_key", "")
     if internal_key:
         if not worker_assertion:
             raise ValueError("Missing X-OmniAgent-Assertion header")
         verify_worker_assertion(worker_assertion, internal_key)
+
+    # Before-hooks — any exception blocks execution.
+    for hook in _before_hooks:
+        await hook(tool, input, context)
 
     entry = _local_registry.get(tool)
     if entry is None:
@@ -122,8 +134,21 @@ async def _handle_execute_impl(
     if context is not None:
         merged["context"] = context
     parsed = entry["input"].model_validate(merged)
-    result = await entry["fn"](parsed)
-    return result.model_dump()
+
+    output: dict = {}
+    try:
+        result = await entry["fn"](parsed)
+        output = result.model_dump()
+        return output
+    except Exception:
+        raise
+    finally:
+        # After-hooks always run.  Exceptions logged, never propagate.
+        for hook in _after_hooks:
+            try:
+                await hook(tool, input, context, output)
+            except Exception:
+                logger.exception("after-execute hook failed for tool=%s", tool)
 
 
 def verify_worker_assertion(assertion: str, internal_key: str) -> dict:

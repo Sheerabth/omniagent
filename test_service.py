@@ -313,9 +313,7 @@ logger = logging.getLogger(__name__)
 @app.post("/execute")
 async def execute(request: Request):
     try:
-        output = await omniagent.handle_execute_from_request(
-            await request.json(), dict(request.headers)
-        )
+        output = await omniagent.handle_execute(await request.json(), dict(request.headers))
         return {"output": output}
     except ValueError as e:
         raise HTTPException(401, detail=str(e)) from e
