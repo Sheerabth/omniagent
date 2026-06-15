@@ -9,6 +9,8 @@ from typing import Any
 
 import pydantic_monty as monty_lib
 
+from omniagent.worker.models import ToolSnapshot
+
 _MONTY_WORKERS = int(os.environ.get("MONTY_EXECUTOR_WORKERS", "4"))
 _MONTY_TIMEOUT = int(os.environ.get("MONTY_EXECUTION_TIMEOUT", "30"))
 _monty_executor: concurrent.futures.ThreadPoolExecutor | None = None
@@ -22,9 +24,9 @@ def _get_monty_executor() -> concurrent.futures.ThreadPoolExecutor:
 
 
 def make_monty_tool(
-    tool_snapshot: dict[str, Any],
-    tool_executor: Callable[[str, dict], Awaitable[dict]],
-) -> Callable:
+    tool_snapshot: dict[str, ToolSnapshot],
+    tool_executor: Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]],
+) -> Callable[..., Awaitable[str]]:
     async def execute_python(code: str, observation: str) -> str:
         result = await run_monty_code(code, tool_snapshot, tool_executor)
         return json.dumps(result)
@@ -34,8 +36,8 @@ def make_monty_tool(
 
 async def run_monty_code(
     code: str,
-    tool_snapshot: dict[str, Any],
-    tool_executor: Callable[[str, dict], Awaitable[dict]],
+    tool_snapshot: dict[str, ToolSnapshot],
+    tool_executor: Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]],
 ) -> Any:
     external_fns: dict[str, Callable] = {}
     for tool_name in tool_snapshot:
@@ -61,8 +63,8 @@ async def run_monty_code(
 
 def _make_sync_tool(
     tool_name: str,
-    tool_executor: Callable[[str, dict], Awaitable[dict]],
-) -> Callable:
+    tool_executor: Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]],
+) -> Callable[..., Any]:
     def sync_tool(**kwargs: Any) -> Any:
         return asyncio.run(tool_executor(tool_name, kwargs))
 

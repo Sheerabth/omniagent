@@ -1,3 +1,5 @@
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
@@ -11,8 +13,8 @@ router = APIRouter(prefix="/tools", tags=["tools"])
 class ToolRegisterEntry(BaseModel):
     name: str
     description: str
-    input_schema: dict
-    output_schema: dict
+    input_schema: dict[str, Any]
+    output_schema: dict[str, Any]
 
 
 class ToolRegisterRequest(BaseModel):
@@ -23,7 +25,7 @@ class ToolRegisterRequest(BaseModel):
 
 
 @router.post("/register", status_code=204)
-async def register_tools(body: ToolRegisterRequest, _=Depends(require_any)):
+async def register_tools(body: ToolRegisterRequest, _=Depends(require_any)) -> None:
     import json
 
     async with get_conn() as conn:
@@ -64,17 +66,17 @@ async def register_tools(body: ToolRegisterRequest, _=Depends(require_any)):
 
 
 @router.get("", response_model=list[ToolRecord])
-async def list_tools(_=Depends(require_any)):
+async def list_tools(_=Depends(require_any)) -> list[ToolRecord]:
     async with get_conn() as conn:
         rows = await conn.execute("SELECT * FROM tools ORDER BY name")
-        return await rows.fetchall()
+        return [ToolRecord.model_validate(dict(r)) for r in await rows.fetchall()]
 
 
 @router.get("/{namespace}", response_model=list[ToolRecord])
-async def list_tools_by_namespace(namespace: str, _=Depends(require_any)):
+async def list_tools_by_namespace(namespace: str, _=Depends(require_any)) -> list[ToolRecord]:
     async with get_conn() as conn:
         rows = await conn.execute(
             "SELECT * FROM tools WHERE namespace = %s ORDER BY name",
             (namespace,),
         )
-        return await rows.fetchall()
+        return [ToolRecord.model_validate(dict(r)) for r in await rows.fetchall()]

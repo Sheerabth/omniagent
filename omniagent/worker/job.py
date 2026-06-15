@@ -12,6 +12,18 @@ import jwt
 import procrastinate
 from procrastinate import PsycopgConnector
 
+from omniagent.control_plane.models import MessageRecord
+from omniagent.worker.models import (
+    BaseEvent,
+    ErrorEvent,
+    SessionConfig,
+    SkillSnapshot,
+    SystemPromptEvent,
+    ToolCallEvent,
+    ToolResultEvent,
+    ToolSnapshot,
+)
+
 logger = logging.getLogger(__name__)
 
 CONTROL_PLANE = os.environ.get("OMNIAGENT_CONTROL_PLANE", "http://localhost:8080")
@@ -67,7 +79,7 @@ def _worker_service_headers(session_id: str, tool_name: str) -> dict[str, str]:
     }
 
 
-async def _fetch_session_config(session_id: str) -> dict[str, Any]:
+async def _fetch_session_config(session_id: str) -> SessionConfig:
     from omniagent.control_plane.db import get_conn
 
     async with get_conn() as conn:
@@ -91,7 +103,7 @@ async def _fetch_session_config(session_id: str) -> dict[str, Any]:
         if not agent:
             raise RuntimeError(f"agent_version_deleted:{agent_name}:{agent_version}")
 
-        skills = []
+        skills: list[SkillSnapshot] = []
         all_tool_names: list[str] = []
         for skill_name, skill_version in skill_versions.items():
             rows = await conn.execute(
@@ -101,44 +113,44 @@ async def _fetch_session_config(session_id: str) -> dict[str, Any]:
             skill = await rows.fetchone()
             if not skill:
                 raise RuntimeError(f"skill_version_deleted:{skill_name}:{skill_version}")
-            skills.append(dict(skill))
+            skills.append(SkillSnapshot.model_validate(dict(skill)))
             all_tool_names.extend(skill["tool_names"])
 
-        tool_snapshot: dict[str, Any] = {}
+        tool_snapshot: dict[str, ToolSnapshot] = {}
         if all_tool_names:
             rows = await conn.execute("SELECT * FROM tools WHERE name = ANY(%s)", (all_tool_names,))
             for tool in await rows.fetchall():
-                tool_snapshot[tool["name"]] = {
-                    "name": tool["name"],
-                    "description": tool["description"],
-                    "input_schema": tool["input_schema"],
-                    "output_schema": tool["output_schema"],
-                    "execute_url": tool["execute_url"] or "",
-                }
+                tool_snapshot[tool["name"]] = ToolSnapshot(
+                    name=tool["name"],
+                    description=tool["description"],
+                    input_schema=tool["input_schema"],
+                    output_schema=tool["output_schema"],
+                    execute_url=tool["execute_url"] or "",
+                )
 
-    return {
-        "harness": agent["harness"],
-        "model": agent["model"],
-        "system_prompt": agent["system_prompt"],
-        "use_monty": agent["use_monty"],
-        "auth_context": agent.get("auth_context"),
-        "skills": skills,
-        "tool_snapshot": tool_snapshot,
-    }
+    return SessionConfig(
+        harness=agent["harness"],
+        model=agent["model"],
+        system_prompt=agent["system_prompt"],
+        use_monty=agent["use_monty"],
+        auth_context=agent.get("auth_context"),
+        skills=skills,
+        tool_snapshot=tool_snapshot,
+    )
 
 
 async def _tool_executor(
     session_id: str,
     tool_name: str,
-    input_data: dict,
-    tool_snapshot: dict[str, Any],
+    input_data: dict[str, Any],
+    tool_snapshot: dict[str, ToolSnapshot],
     auth_context: Any = None,
-) -> dict:
+) -> dict[str, Any]:
     tool = tool_snapshot.get(tool_name)
     if not tool:
         raise RuntimeError(f"tool_not_found:{tool_name}")
 
-    execute_url = tool.get("execute_url", "")
+    execute_url = tool.execute_url
     if not execute_url:
         raise RuntimeError(f"tool_no_execute_url:{tool_name}")
 
@@ -162,11 +174,11 @@ async def _tool_executor(
     return resp.json()["output"]
 
 
-async def _emit_event(session_id: str, event: dict) -> None:
+async def _emit_event(session_id: str, event: BaseEvent) -> None:
     try:
         await _get_http_client().post(
             f"{CONTROL_PLANE}/internal/sessions/{session_id}/event",
-            json=event,
+            json=event.model_dump(exclude_none=True),
             headers=_internal_headers(),
             timeout=5,
         )
@@ -178,30 +190,27 @@ def _safe_tool_name(name: str) -> str:
     return name.replace(".", "__").replace("-", "_")
 
 
-def _build_system_prompt(config: dict[str, Any], llm_context: dict[str, Any] | None = None) -> str:
-    lines = [config.get("system_prompt", "")]
+def _build_system_prompt(config: SessionConfig, llm_context: dict[str, Any] | None = None) -> str:
+    lines = [config.system_prompt]
     if llm_context:
         lines.append(f"\nUser context: {json.dumps(llm_context, default=str)}")
 
-    for skill in config.get("skills", []):
-        if skill.get("system_prompt"):
-            lines.append(skill["system_prompt"])
-        if skill.get("instructions"):
-            lines.append(skill["instructions"])
+    for skill in config.skills:
+        if skill.system_prompt:
+            lines.append(skill.system_prompt)
+        if skill.instructions:
+            lines.append(skill.instructions)
 
-    tool_snapshot = config.get("tool_snapshot", {})
-    use_monty = config.get("use_monty", False)
-
-    if tool_snapshot and not use_monty:
+    if config.tool_snapshot and not config.use_monty:
         lines.append("\nAvailable tools:")
-        for tool_name, schema in tool_snapshot.items():
-            lines.append(f"- {tool_name}: {schema.get('description', '')}")
-            if schema.get("input_schema"):
-                lines.append(f"  Input schema: {json.dumps(schema['input_schema'])}")
-            if schema.get("output_schema"):
-                lines.append(f"  Output schema: {json.dumps(schema['output_schema'])}")
+        for tool_name, schema in config.tool_snapshot.items():
+            lines.append(f"- {tool_name}: {schema.description}")
+            if schema.input_schema:
+                lines.append(f"  Input schema: {json.dumps(schema.input_schema)}")
+            if schema.output_schema:
+                lines.append(f"  Output schema: {json.dumps(schema.output_schema)}")
 
-    if tool_snapshot and use_monty:
+    if config.tool_snapshot and config.use_monty:
         lines.append(
             "\nYou have access to one tool: `execute_python`. "
             "You MUST use it to interact with all external capabilities. "
@@ -209,16 +218,16 @@ def _build_system_prompt(config: dict[str, Any], llm_context: dict[str, Any] | N
             "Never split work across multiple execute_python calls. "
             "Write Python code and call the following functions (available as globals inside the sandbox):"
         )
-        for tool_name, schema in tool_snapshot.items():
+        for tool_name, schema in config.tool_snapshot.items():
             fn = _safe_tool_name(tool_name)
-            props = schema.get("input_schema", {}).get("properties", {})
+            props = schema.input_schema.get("properties", {})
             params = ", ".join(
                 f"{k}=..." for k in props if k not in ("observation", "auth_context", "llm_context")
             )
-            out_schema = schema.get("output_schema") or {}
+            out_schema = schema.output_schema or {}
             out_props = out_schema.get("properties", out_schema)
             out_info = json.dumps(out_props) if out_props else "dict"
-            lines.append(f"- {fn}({params})  -> {out_info}  # {schema.get('description', '')}")
+            lines.append(f"- {fn}({params})  -> {out_info}  # {schema.description}")
         lines.append(
             "\nIMPORTANT: These functions return Python dicts DIRECTLY — there is NO 'result' wrapper key. "
             "Access fields directly, e.g.: `data = some_fn(x=1); value = data['field_name']`\n"
@@ -235,34 +244,27 @@ def _build_system_prompt(config: dict[str, Any], llm_context: dict[str, Any] | N
 @app.task(name="run_agent_job", queue="default")
 async def run_agent_job(session_id: str, payload: str) -> None:
     data = json.loads(payload)
-    history = data.get("history", [])
+    history = [MessageRecord.model_validate(m) for m in data.get("history", [])]
     runtime_auth_context: Any = data.get("auth_context")
     runtime_llm_context: Any = data.get("llm_context")
 
     config = await _fetch_session_config(session_id)
-    harness = config["harness"]
-    model = config["model"]
-    use_monty = config["use_monty"]
-    tool_snapshot = config["tool_snapshot"]
+    harness = config.harness
+    model = config.model
+    use_monty = config.use_monty
+    tool_snapshot = config.tool_snapshot
 
     # Runtime auth_context replaces agent default wholesale — no merge.
-    auth_context = (
-        runtime_auth_context if runtime_auth_context is not None else config.get("auth_context")
-    )
+    auth_context = runtime_auth_context if runtime_auth_context is not None else config.auth_context
 
     system_prompt = _build_system_prompt(config, runtime_llm_context)
 
     llm_api_key = os.environ.get(f"OMNIAGENT_{harness.upper()}_API_KEY")
 
-    async def tool_exec(tool_name: str, input_data: dict) -> dict:
+    async def tool_exec(tool_name: str, input_data: dict[str, Any]) -> dict[str, Any]:
         await _emit_event(
             session_id,
-            {
-                "type": "tool_call",
-                "tool": tool_name,
-                "input": input_data,
-                "harness": harness,
-            },
+            ToolCallEvent(tool=tool_name, input=input_data, harness=harness),
         )
         output = await _tool_executor(
             session_id,
@@ -273,27 +275,16 @@ async def run_agent_job(session_id: str, payload: str) -> None:
         )
         await _emit_event(
             session_id,
-            {
-                "type": "tool_result",
-                "tool": tool_name,
-                "success": True,
-                "input": input_data,
-                "output": output,
-                "harness": harness,
-            },
+            ToolResultEvent(
+                tool=tool_name, success=True, input=input_data, output=output, harness=harness
+            ),
         )
         return output
 
-    async def emit(event: dict) -> None:
+    async def emit(event: BaseEvent) -> None:
         await _emit_event(session_id, event)
 
-    await emit(
-        {
-            "type": "system_prompt",
-            "content": system_prompt,
-            "input": history,
-        }
-    )
+    await emit(SystemPromptEvent(content=system_prompt, input=history))
 
     try:
         if harness == "antigravity":
@@ -326,5 +317,5 @@ async def run_agent_job(session_id: str, payload: str) -> None:
 
     except Exception as exc:
         logger.exception("run_agent_job failed for session %s", session_id)
-        await emit({"type": "error", "reason": str(exc)})
+        await emit(ErrorEvent(reason=str(exc)))
         raise

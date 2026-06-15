@@ -6,15 +6,27 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 import httpx
+from pydantic import BaseModel
 
 from omniagent._registry import _local_registry
 
 logger = logging.getLogger(__name__)
 
-_config: dict[str, Any] = {}
 
-BeforeHook = Callable[[str, dict, Any], Awaitable[None]]  # tool, input, auth_context
-AfterHook = Callable[[str, dict, Any, dict], Awaitable[None]]  # tool, input, auth_context, output
+class ClientConfig(BaseModel):
+    service: str = ""
+    namespace: str = ""
+    control_plane: str = ""
+    api_key: str = ""
+    internal_key: str = ""
+
+
+_config: ClientConfig = ClientConfig()
+
+BeforeHook = Callable[[str, dict[str, Any], Any], Awaitable[None]]  # tool, input, auth_context
+AfterHook = Callable[
+    [str, dict[str, Any], Any, dict[str, Any]], Awaitable[None]
+]  # tool, input, auth_context, output
 _before_hooks: list[BeforeHook] = []
 _after_hooks: list[AfterHook] = []
 
@@ -60,20 +72,20 @@ def init(
     global _config
 
     ns = namespace or service
-    _config = {
-        "service": service,
-        "namespace": ns,
-        "control_plane": control_plane,
-        "api_key": api_key,
-        "internal_key": os.environ.get("OMNIAGENT_INTERNAL_KEY", ""),
-    }
+    _config = ClientConfig(
+        service=service,
+        namespace=ns,
+        control_plane=control_plane,
+        api_key=api_key,
+        internal_key=os.environ.get("OMNIAGENT_INTERNAL_KEY", ""),
+    )
 
     tools = [
         {
             "name": f"{ns}.{fn_name}",
-            "description": entry["description"],
-            "input_schema": entry["input_schema"],
-            "output_schema": entry["output_schema"],
+            "description": entry.description,
+            "input_schema": entry.input_schema,
+            "output_schema": entry.output_schema,
         }
         for fn_name, entry in _local_registry.items()
     ]
@@ -87,7 +99,7 @@ def init(
     logger.info("omniagent: registered %d tools at %s", len(tools), execute_url)
 
 
-async def handle_execute(body: dict, headers: dict[str, str]) -> dict:
+async def handle_execute(body: dict[str, Any], headers: dict[str, str]) -> dict[str, Any]:
     """Call from your /execute route — passes parsed body and headers.
 
     Extracts tool, input, auth_context, llm_context from body and
@@ -112,13 +124,13 @@ async def handle_execute(body: dict, headers: dict[str, str]) -> dict:
 
 async def _handle_execute_impl(
     tool: str,
-    input: dict,
+    input: dict[str, Any],
     auth_context: Any = None,
     *,
     worker_assertion: str | None = None,
-) -> dict:
+) -> dict[str, Any]:
     """Core implementation — validates assertion, runs hooks, calls tool function."""
-    internal_key: str = _config.get("internal_key", "")
+    internal_key: str = _config.internal_key
     if internal_key:
         if not worker_assertion:
             raise ValueError("Missing X-OmniAgent-Assertion header")
@@ -134,11 +146,11 @@ async def _handle_execute_impl(
     merged = {**input}
     if auth_context is not None:
         merged["auth_context"] = auth_context
-    parsed = entry["input"].model_validate(merged)
+    parsed = entry.input.model_validate(merged)
 
-    output: dict = {}
+    output: dict[str, Any] = {}
     try:
-        result = await entry["fn"](parsed)
+        result = await entry.fn(parsed)
         output = result.model_dump()
         return output
     except Exception:
@@ -152,7 +164,7 @@ async def _handle_execute_impl(
                 logger.exception("after-execute hook failed for tool=%s", tool)
 
 
-def verify_worker_assertion(assertion: str, internal_key: str) -> dict:
+def verify_worker_assertion(assertion: str, internal_key: str) -> dict[str, Any]:
     """Verify a JWT assertion from the OmniAgent worker.
 
     Returns the decoded claims dict on success. Raises ValueError on failure.

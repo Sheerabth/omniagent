@@ -5,10 +5,17 @@ import uuid
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 
 from omniagent.control_plane.auth import require_internal
 from omniagent.control_plane.db import get_conn
-from omniagent.control_plane.models import SessionEventRequest, SessionResultRequest
+from omniagent.control_plane.models import (
+    MessageRecord,
+    SessionCompletePayload,
+    SessionEventRequest,
+    SessionResultRequest,
+    ToolCallEntry,
+)
 from omniagent.control_plane.redis_client import get_redis
 
 router = APIRouter(prefix="/internal", tags=["internal"])
@@ -19,7 +26,7 @@ async def post_session_result(
     session_id: uuid.UUID,
     body: SessionResultRequest,
     _=Depends(require_internal),
-):
+) -> None:
     async with get_conn() as conn:
         rows = await conn.execute("SELECT messages FROM sessions WHERE id = %s", (session_id,))
         sess = await rows.fetchone()
@@ -27,18 +34,18 @@ async def post_session_result(
             raise HTTPException(404)
         messages = sess["messages"] or []
         messages.append(
-            {
-                "role": "assistant",
-                "content": body.result,
-                "timestamp": datetime.now(UTC).isoformat(),
-            }
+            MessageRecord(
+                role="assistant",
+                content=body.result,
+                timestamp=datetime.now(UTC).isoformat(),
+            ).model_dump()
         )
         await conn.execute(
             "UPDATE sessions SET status='complete', messages=%s, updated_at=NOW() WHERE id=%s",
             (json.dumps(messages), session_id),
         )
 
-    await _publish(session_id, {"type": "complete", "result": body.result})
+    await _publish(session_id, SessionCompletePayload(result=body.result))
 
 
 @router.post("/sessions/{session_id}/event", status_code=204)
@@ -46,7 +53,7 @@ async def post_session_event(
     session_id: uuid.UUID,
     body: SessionEventRequest,
     _=Depends(require_internal),
-):
+) -> None:
     if body.type == "error":
         async with get_conn() as conn:
             await conn.execute(
@@ -65,24 +72,24 @@ async def post_session_event(
                 if sess:
                     tool_calls = sess["tool_calls"] or []
                     tool_calls.append(
-                        {
-                            "tool_name": event_data.get("tool"),
-                            "input": event_data.get("input"),
-                            "output": event_data.get("output"),
-                            "harness": event_data.get("harness"),
-                            "timestamp": datetime.now(UTC).isoformat(),
-                            "success": event_data.get("success", True),
-                            "error": event_data.get("error"),
-                        }
+                        ToolCallEntry(
+                            tool_name=event_data.get("tool") or "",
+                            input=event_data.get("input") or {},
+                            output=event_data.get("output"),
+                            harness=event_data.get("harness"),
+                            timestamp=datetime.now(UTC),
+                            success=event_data.get("success", True),
+                            error=event_data.get("error"),
+                        ).model_dump(mode="json")
                     )
                     await conn.execute(
                         "UPDATE sessions SET tool_calls = %s WHERE id = %s",
                         (json.dumps(tool_calls), session_id),
                     )
 
-    await _publish(session_id, body.model_dump(exclude_none=True))
+    await _publish(session_id, body)
 
 
-async def _publish(session_id: uuid.UUID, payload: dict) -> None:
+async def _publish(session_id: uuid.UUID, payload: BaseModel) -> None:
     channel = f"session_{session_id}"
-    await get_redis().publish(channel, json.dumps(payload))
+    await get_redis().publish(channel, payload.model_dump_json(exclude_none=True))

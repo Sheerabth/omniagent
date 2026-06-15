@@ -47,14 +47,16 @@ def tool(description: str | None = None) -> Callable[[F], F]:
                     None, functools.partial(fn, *args, **kwargs)
                 )
 
-        _local_registry[fn.__name__] = {
-            "fn": wrapped,
-            "input": input_type,
-            "output": output_type,
-            "description": desc,
-            "input_schema": input_type.model_json_schema(),
-            "output_schema": output_type.model_json_schema(),
-        }
+        from omniagent._registry import RegistryEntry
+
+        _local_registry[fn.__name__] = RegistryEntry(
+            fn=wrapped,
+            input=input_type,
+            output=output_type,
+            description=desc,
+            input_schema=input_type.model_json_schema(),
+            output_schema=output_type.model_json_schema(),
+        )
 
         # Return original fn (preserves calling convention); async wrapper
         # is stored in _local_registry for the worker to invoke.

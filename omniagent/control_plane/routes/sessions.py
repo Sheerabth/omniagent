@@ -8,7 +8,13 @@ from fastapi.responses import JSONResponse
 
 from omniagent.control_plane.auth import require_any
 from omniagent.control_plane.db import get_conn
-from omniagent.control_plane.models import RunRequest, SessionCreate, SessionRecord, SessionStatus
+from omniagent.control_plane.models import (
+    MessageRecord,
+    RunRequest,
+    SessionCreate,
+    SessionRecord,
+    SessionStatus,
+)
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 
@@ -16,7 +22,7 @@ MAX_HISTORY_TURNS = int(os.environ.get("MAX_HISTORY_TURNS", "50"))
 
 
 @router.post("", response_model=SessionRecord, status_code=201)
-async def create_session(body: SessionCreate, _=Depends(require_any)):
+async def create_session(body: SessionCreate, _=Depends(require_any)) -> SessionRecord:
     async with get_conn() as conn:
         if body.agent_version:
             rows = await conn.execute(
@@ -42,11 +48,13 @@ async def create_session(body: SessionCreate, _=Depends(require_any)):
             """,
             (body.agent_name, agent["version"], json.dumps(skill_versions)),
         )
-        return await rows.fetchone()
+        return SessionRecord.model_validate(dict(await rows.fetchone()))
 
 
 @router.post("/{session_id}/run", status_code=202)
-async def run_session(session_id: uuid.UUID, body: RunRequest, _=Depends(require_any)):
+async def run_session(
+    session_id: uuid.UUID, body: RunRequest, _=Depends(require_any)
+) -> JSONResponse:
     async with get_conn() as conn:
         rows = await conn.execute("SELECT * FROM sessions WHERE id = %s", (session_id,))
         session = await rows.fetchone()
@@ -55,11 +63,11 @@ async def run_session(session_id: uuid.UUID, body: RunRequest, _=Depends(require
 
         messages = session["messages"] or []
         messages.append(
-            {
-                "role": "user",
-                "content": body.prompt,
-                "timestamp": datetime.now(UTC).isoformat(),
-            }
+            MessageRecord(
+                role="user",
+                content=body.prompt,
+                timestamp=datetime.now(UTC).isoformat(),
+            ).model_dump()
         )
         if len(messages) > MAX_HISTORY_TURNS * 2:
             messages = messages[-(MAX_HISTORY_TURNS * 2) :]
@@ -96,20 +104,20 @@ async def run_session(session_id: uuid.UUID, body: RunRequest, _=Depends(require
 
 
 @router.get("", response_model=list[SessionRecord])
-async def list_sessions(_=Depends(require_any)):
+async def list_sessions(_=Depends(require_any)) -> list[SessionRecord]:
     async with get_conn() as conn:
         rows = await conn.execute("SELECT * FROM sessions ORDER BY created_at DESC LIMIT 100")
-        return await rows.fetchall()
+        return [SessionRecord.model_validate(dict(r)) for r in await rows.fetchall()]
 
 
 @router.delete("/{session_id}", status_code=204)
-async def delete_session(session_id: uuid.UUID, _=Depends(require_any)):
+async def delete_session(session_id: uuid.UUID, _=Depends(require_any)) -> None:
     async with get_conn() as conn:
         await conn.execute("DELETE FROM sessions WHERE id = %s", (session_id,))
 
 
 @router.get("/{session_id}/status", response_model=SessionStatus)
-async def get_session_status(session_id: uuid.UUID, _=Depends(require_any)):
+async def get_session_status(session_id: uuid.UUID, _=Depends(require_any)) -> SessionStatus:
     async with get_conn() as conn:
         rows = await conn.execute("SELECT * FROM sessions WHERE id = %s", (session_id,))
         session = await rows.fetchone()

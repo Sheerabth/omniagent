@@ -2,6 +2,7 @@
 
 import logging
 import os
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -72,7 +73,7 @@ async def _reconcile_stuck_sessions() -> None:
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     from omniagent.control_plane.migrations import run_migrations
     from omniagent.worker.job import app as proc_app
 
@@ -95,7 +96,7 @@ app = FastAPI(title="OmniAgent Control Plane", lifespan=lifespan)
 
 
 @app.get("/", include_in_schema=False)
-async def ui(request: Request):
+async def ui(request: Request) -> HTMLResponse:
     path = os.path.join(_UI_DIR, "index.html")
     with open(path) as f:
         html = f.read()

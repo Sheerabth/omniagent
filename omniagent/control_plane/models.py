@@ -94,11 +94,17 @@ class RunRequest(BaseModel):
     llm_context: Any = None
 
 
+class MessageRecord(BaseModel):
+    role: str
+    content: str
+    timestamp: str
+
+
 class ToolCallEntry(BaseModel):
     tool_name: str
     input: dict[str, Any]
-    output: dict[str, Any]
-    harness: str
+    output: Any
+    harness: str | None = None
     timestamp: datetime
     success: bool
     error: str | None = None
@@ -107,8 +113,8 @@ class ToolCallEntry(BaseModel):
 class SessionStatus(BaseModel):
     status: str
     result: str | None
-    messages: list[dict[str, Any]]
-    tool_calls: list[dict[str, Any]]
+    messages: list[MessageRecord]
+    tool_calls: list[ToolCallEntry]
     agent_name: str
     agent_version: str
     skill_versions: dict[str, str]
@@ -127,10 +133,22 @@ class ApiKeyRecord(BaseModel):
     created_at: datetime
 
 
+class ApiKeyResponse(BaseModel):
+    id: uuid.UUID
+    name: str
+    created_at: datetime
+    key: str
+
+
 # ── Internal ───────────────────────────────────────────────────────────────
 
 
 class SessionResultRequest(BaseModel):
+    result: str
+
+
+class SessionCompletePayload(BaseModel):
+    type: str = "complete"
     result: str
 
 

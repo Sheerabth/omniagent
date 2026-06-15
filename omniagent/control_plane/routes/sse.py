@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import uuid
+from collections.abc import AsyncGenerator
 
 from fastapi import APIRouter, Depends, HTTPException
 from sse_starlette.sse import EventSourceResponse
@@ -18,7 +19,7 @@ router = APIRouter(tags=["sse"])
 
 
 @router.get("/sessions/{session_id}/stream")
-async def stream_session(session_id: uuid.UUID, _=Depends(require_any)):
+async def stream_session(session_id: uuid.UUID, _=Depends(require_any)) -> EventSourceResponse:
     async with get_conn() as conn:
         rows = await conn.execute("SELECT status FROM sessions WHERE id = %s", (session_id,))
         sess = await rows.fetchone()
@@ -27,7 +28,7 @@ async def stream_session(session_id: uuid.UUID, _=Depends(require_any)):
 
     if sess["status"] in ("complete", "failed"):
 
-        async def immediate():
+        async def immediate() -> AsyncGenerator[dict[str, str]]:
             async with get_conn() as conn:
                 rows = await conn.execute(
                     "SELECT messages FROM sessions WHERE id = %s", (session_id,)
@@ -44,7 +45,7 @@ async def stream_session(session_id: uuid.UUID, _=Depends(require_any)):
 
         return EventSourceResponse(immediate())
 
-    async def event_generator():
+    async def event_generator() -> AsyncGenerator[dict[str, str]]:
         channel = f"session_{session_id}"
         pubsub = get_redis().pubsub()
         try:

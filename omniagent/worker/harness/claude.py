@@ -17,28 +17,30 @@ from mcp.server import Server
 from mcp.types import TextContent
 from mcp.types import Tool as McpTool
 
+from omniagent.control_plane.models import MessageRecord
 from omniagent.worker.harness.base import (
     EXECUTE_PYTHON_DESCRIPTION,
     HarnessAdapter,
     make_monty_executor,
 )
+from omniagent.worker.models import BaseEvent, ThinkingEvent, ToolSnapshot
 
 logger = logging.getLogger(__name__)
 
 
 class ClaudeAdapter(HarnessAdapter):
 
-    def __init__(self, api_key: str | None = None):
+    def __init__(self, api_key: str | None = None) -> None:
         self._api_key = api_key
 
     async def run(
         self,
         system_prompt: str,
-        history: list[dict],
-        tool_executor: Callable[[str, dict], Awaitable[dict]],
-        emit_event: Callable[[dict], Awaitable[None]],
+        history: list[MessageRecord],
+        tool_executor: Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]],
+        emit_event: Callable[[BaseEvent], Awaitable[None]],
         use_monty: bool,
-        tool_snapshot: dict[str, Any],
+        tool_snapshot: dict[str, ToolSnapshot],
         model: str = "",
     ) -> str:
         mcp_server = _build_mcp_server(tool_snapshot, tool_executor, emit_event, use_monty)
@@ -58,7 +60,7 @@ class ClaudeAdapter(HarnessAdapter):
         )
 
         prompt = _build_prompt_with_history(history)
-        await emit_event({"type": "thinking", "content": "Starting Claude agent"})
+        await emit_event(ThinkingEvent(content="Starting Claude agent"))
 
         final_text = ""
         async for message in query(prompt=prompt, options=options):
@@ -73,9 +75,9 @@ class ClaudeAdapter(HarnessAdapter):
 
 
 def _build_mcp_server(
-    tool_snapshot: dict[str, Any],
-    tool_executor: Callable[[str, dict], Awaitable[dict]],
-    emit_event: Callable[[dict], Awaitable[None]],
+    tool_snapshot: dict[str, ToolSnapshot],
+    tool_executor: Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]],
+    emit_event: Callable[[BaseEvent], Awaitable[None]],
     use_monty: bool,
 ) -> Server:
     server = Server("omniagent-tools")
@@ -86,8 +88,8 @@ def _build_mcp_server(
         tools = [
             McpTool(
                 name=name,
-                description=schema.get("description", ""),
-                inputSchema=schema.get("input_schema", {"type": "object", "properties": {}}),
+                description=schema.description,
+                inputSchema=schema.input_schema or {"type": "object", "properties": {}},
             )
             for name, schema in tool_snapshot.items()
         ]
@@ -117,7 +119,7 @@ def _build_mcp_server(
     )
 
     @server.call_tool()
-    async def call_tool(name: str, arguments: dict) -> list[TextContent]:
+    async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         if name == "execute_python":
             if not monty_handler:
                 return [
@@ -143,16 +145,15 @@ def _build_mcp_server(
     return server
 
 
-def _build_prompt_with_history(history: list[dict]) -> str:
+def _build_prompt_with_history(history: list[MessageRecord]) -> str:
     if not history:
         return ""
     prior = history[:-1]
     current = history[-1]
     if not prior:
-        return current.get("content", "")
+        return current.content
     lines = []
     for m in prior:
-        role = m.get("role", "user").upper()
-        lines.append(f"{role}: {m.get('content', '')}")
-    lines.append(f"\nCurrent request:\n{current.get('content', '')}")
+        lines.append(f"{m.role.upper()}: {m.content}")
+    lines.append(f"\nCurrent request:\n{current.content}")
     return "\n".join(lines)

@@ -17,7 +17,9 @@ except ImportError as exc:
         "Verify LocalAgentConfig and policy import paths for the installed package version."
     ) from exc
 
+from omniagent.control_plane.models import MessageRecord
 from omniagent.worker.harness.base import HarnessAdapter, make_monty_executor
+from omniagent.worker.models import BaseEvent, ThinkingEvent, ToolSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -26,17 +28,17 @@ _TYPE_MAP = {"string": str, "integer": int, "number": float, "boolean": bool}
 
 class AntigravityAdapter(HarnessAdapter):
 
-    def __init__(self, api_key: str | None = None):
+    def __init__(self, api_key: str | None = None) -> None:
         self._api_key = api_key
 
     async def run(
         self,
         system_prompt: str,
-        history: list[dict],
-        tool_executor: Callable[[str, dict], Awaitable[dict]],
-        emit_event: Callable[[dict], Awaitable[None]],
+        history: list[MessageRecord],
+        tool_executor: Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]],
+        emit_event: Callable[[BaseEvent], Awaitable[None]],
         use_monty: bool,
-        tool_snapshot: dict[str, Any],
+        tool_snapshot: dict[str, ToolSnapshot],
         model: str = "",
     ) -> str:
         if use_monty:
@@ -56,11 +58,11 @@ class AntigravityAdapter(HarnessAdapter):
         )
 
         latest_user = next(
-            (m["content"] for m in reversed(history) if m.get("role") == "user"),
+            (m.content for m in reversed(history) if m.role == "user"),
             "",
         )
 
-        await emit_event({"type": "thinking", "content": "Starting Antigravity agent"})
+        await emit_event(ThinkingEvent(content="Starting Antigravity agent"))
 
         async with Agent(config) as agent:
             response = await agent.chat(latest_user)
@@ -70,30 +72,29 @@ class AntigravityAdapter(HarnessAdapter):
 
     def _build_tool_callables(
         self,
-        tool_snapshot: dict[str, Any],
-        tool_executor: Callable[[str, dict], Awaitable[dict]],
-        emit_event: Callable[[dict], Awaitable[None]],
-    ) -> list[Callable]:
+        tool_snapshot: dict[str, ToolSnapshot],
+        tool_executor: Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]],
+        emit_event: Callable[[BaseEvent], Awaitable[None]],
+    ) -> list[Callable[..., Any]]:
         return [
             _make_tool_fn(name, schema, tool_executor) for name, schema in tool_snapshot.items()
         ]
 
     def _build_monty_tool(
         self,
-        tool_snapshot: dict[str, Any],
-        tool_executor: Callable[[str, dict], Awaitable[dict]],
-        emit_event: Callable[[dict], Awaitable[None]],
-    ) -> Callable:
+        tool_snapshot: dict[str, ToolSnapshot],
+        tool_executor: Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]],
+        emit_event: Callable[[BaseEvent], Awaitable[None]],
+    ) -> Callable[..., Awaitable[str]]:
         return make_monty_executor(tool_snapshot, tool_executor, emit_event)
 
 
 def _make_tool_fn(
     tool_name: str,
-    schema: dict[str, Any],
-    tool_executor: Callable[[str, dict], Awaitable[dict]],
-) -> Callable:
-    input_schema = schema.get("input_schema", {})
-    props = input_schema.get("properties", {})
+    schema: ToolSnapshot,
+    tool_executor: Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]],
+) -> Callable[..., Any]:
+    props = schema.input_schema.get("properties", {})
     param_names = [k for k in props if k != "observation"]
 
     async def tool_fn(**kwargs: Any) -> str:
@@ -113,7 +114,7 @@ def _make_tool_fn(
 
     tool_fn.__signature__ = inspect.Signature(params)
     tool_fn.__name__ = _safe_name(tool_name)
-    tool_fn.__doc__ = schema.get("description", "")
+    tool_fn.__doc__ = schema.description
     return tool_fn
 
 
@@ -121,11 +122,11 @@ def _safe_name(tool_name: str) -> str:
     return tool_name.replace(".", "__").replace("-", "_")
 
 
-def _build_system_with_history(system_prompt: str, history: list[dict]) -> str:
-    prior = [m for m in history[:-1] if m.get("role") in ("user", "assistant")]
+def _build_system_with_history(system_prompt: str, history: list[MessageRecord]) -> str:
+    prior = [m for m in history[:-1] if m.role in ("user", "assistant")]
     if not prior:
         return system_prompt
-    transcript = "\n".join(f"{m['role'].upper()}: {m['content']}" for m in prior)
+    transcript = "\n".join(f"{m.role.upper()}: {m.content}" for m in prior)
     return f"{system_prompt}\n\n--- Prior conversation ---\n{transcript}\n--- End prior conversation ---"
 
 
