@@ -10,7 +10,7 @@ from omniagent._registry import _local_registry
 F = TypeVar("F", bound=Callable[..., Any])
 
 
-def tool(description: str | None = None) -> Callable[[F], F]:
+def tool(description: str | None = None, **metadata: Any) -> Callable[[F], F]:
     def decorator(fn: F) -> F:
         try:
             hints = typing.get_type_hints(fn)
@@ -56,6 +56,7 @@ def tool(description: str | None = None) -> Callable[[F], F]:
             description=desc,
             input_schema=input_type.model_json_schema(),
             output_schema=output_type.model_json_schema(),
+            metadata=metadata,
         )
 
         # Return original fn (preserves calling convention); async wrapper

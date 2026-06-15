@@ -23,10 +23,12 @@ class ClientConfig(BaseModel):
 
 _config: ClientConfig = ClientConfig()
 
-BeforeHook = Callable[[str, dict[str, Any], Any], Awaitable[None]]  # tool, input, auth_context
-AfterHook = Callable[
+BeforeHook = Callable[
     [str, dict[str, Any], Any, dict[str, Any]], Awaitable[None]
-]  # tool, input, auth_context, output
+]  # tool, input, auth_context, metadata
+AfterHook = Callable[
+    [str, dict[str, Any], Any, dict[str, Any], dict[str, Any]], Awaitable[None]
+]  # tool, input, auth_context, output, metadata
 _before_hooks: list[BeforeHook] = []
 _after_hooks: list[AfterHook] = []
 
@@ -136,13 +138,13 @@ async def _handle_execute_impl(
             raise ValueError("Missing X-OmniAgent-Assertion header")
         verify_worker_assertion(worker_assertion, internal_key)
 
-    # Before-hooks — any exception blocks execution.
-    for hook in _before_hooks:
-        await hook(tool, input, auth_context)
-
     entry = _local_registry.get(tool)
     if entry is None:
         raise KeyError(f"Tool '{tool}' not found")
+
+    # Before-hooks — any exception blocks execution.
+    for hook in _before_hooks:
+        await hook(tool, input, auth_context, entry.metadata)
     merged = {**input}
     if auth_context is not None:
         merged["auth_context"] = auth_context
@@ -159,7 +161,7 @@ async def _handle_execute_impl(
         # After-hooks always run.  Exceptions logged, never propagate.
         for hook in _after_hooks:
             try:
-                await hook(tool, input, auth_context, output)
+                await hook(tool, input, auth_context, output, entry.metadata)
             except Exception:
                 logger.exception("after-execute hook failed for tool=%s", tool)
 

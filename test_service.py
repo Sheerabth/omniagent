@@ -168,7 +168,10 @@ class CurrencyOutput(ToolOutput):
 RATES_TO_USD = {"USD": 1.0, "EUR": 1.08, "GBP": 1.27, "JPY": 0.0067, "AUD": 0.65, "INR": 0.012}
 
 
-@tool(description="Convert an amount between currencies. Supports USD, EUR, GBP, JPY, AUD, INR.")
+@tool(
+    description="Convert an amount between currencies. Supports USD, EUR, GBP, JPY, AUD, INR.",
+    permissions=["paid"],
+)
 async def convert_currency(inp: CurrencyInput) -> CurrencyOutput:
     src = inp.from_currency.upper()
     dst = inp.to_currency.upper()
@@ -296,7 +299,8 @@ FLIGHT_DATA = {
 
 
 @tool(
-    description="Estimate flight cost and duration between two cities for a number of passengers."
+    description="Estimate flight cost and duration between two cities for a number of passengers.",
+    permissions=["paid"],
 )
 async def estimate_flight(inp: FlightInput) -> FlightOutput:
     key = (inp.origin_city.lower(), inp.destination_city.lower())
@@ -338,10 +342,8 @@ async def execute(request: Request):
 # ── Pre/post execute hooks ──────────────────────────────────────────────────
 
 
-async def auth_hook(tool_name: str, input_data: dict, auth_context):
-    """Block paid tools if no valid tenant/auth present."""
-    paid_tools = {"test-service.estimate_flight", "test-service.convert_currency"}
-    if tool_name in paid_tools:
+async def auth_hook(tool_name: str, input_data: dict, auth_context, metadata: dict):
+    if "paid" in metadata.get("permissions", []):
         if not auth_context or not auth_context.get("user_id"):
             raise PermissionError(f"Tool '{tool_name}' requires auth_context.user_id")
         logger.info(
@@ -353,7 +355,7 @@ async def auth_hook(tool_name: str, input_data: dict, auth_context):
         )
 
 
-async def audit_hook(tool_name: str, input_data: dict, auth_context, output: dict):
+async def audit_hook(tool_name: str, input_data: dict, auth_context, output: dict, metadata: dict):
     logger.info(
         "audit: tool=%s in_keys=%s out_keys=%s user=%s ok",
         tool_name,

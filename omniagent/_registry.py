@@ -14,6 +14,7 @@ class RegistryEntry(BaseModel):
     description: str
     input_schema: dict[str, Any]
     output_schema: dict[str, Any]
+    metadata: dict[str, Any] = {}
 
 
 _local_registry: dict[str, RegistryEntry] = {}
