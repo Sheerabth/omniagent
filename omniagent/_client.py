@@ -85,9 +85,14 @@ async def handle_execute_from_request(body: dict, headers: dict[str, str]) -> di
     Extracts tool, input, context from body and X-OmniAgent-Assertion from headers.
     Validates worker assertion automatically when OMNIAGENT_INTERNAL_KEY is set.
 
-    Raises ValueError (auth), KeyError (unknown tool). Map to your framework's
-    error responses — all other exceptions are bubbled up as 500 equivalents.
+    Raises ValueError (auth), KeyError (missing field / unknown tool). Map to
+    your framework's error responses — all other exceptions are bubbled up
+    as 500 equivalents.
     """
+    if "tool" not in body:
+        raise KeyError("Missing 'tool' in request body")
+    if "input" not in body:
+        raise KeyError("Missing 'input' in request body")
     return await _handle_execute_impl(
         tool=body["tool"],
         input=body["input"],

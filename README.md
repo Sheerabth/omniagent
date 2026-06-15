@@ -24,7 +24,7 @@ flowchart LR
     end
 
     Client["Client UI"] -->|"API Key"| CP["Control Plane"]
-    CP -->|"Internal Key"| Worker["Worker"]
+    Worker -->|"Internal Key"| CP
     Worker -->|"JWT Assertion"| Service["Service"]
     Client -->|"context via CP→Worker→Service"| Service
 ```
