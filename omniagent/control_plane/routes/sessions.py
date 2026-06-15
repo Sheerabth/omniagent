@@ -82,7 +82,14 @@ async def run_session(session_id: uuid.UUID, body: RunRequest, _=Depends(require
 
         await run_agent_job.configure(queue="default").defer_async(
             session_id=str(session_id),
-            payload=json.dumps({"history": messages, "context": body.context}, default=str),
+            payload=json.dumps(
+                {
+                    "history": messages,
+                    "auth_context": body.auth_context,
+                    "llm_context": body.llm_context,
+                },
+                default=str,
+            ),
         )
 
     return JSONResponse({"session_id": str(session_id)}, status_code=202)

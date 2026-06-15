@@ -54,6 +54,7 @@ class AgentCreate(BaseModel):
     skill_refs: dict[str, str] = {}  # {"skill_name": "skill_version"}
     system_prompt: str = ""
     use_monty: bool = False
+    auth_context: Any = None
 
 
 class AgentRecord(BaseModel):
@@ -65,6 +66,7 @@ class AgentRecord(BaseModel):
     skill_refs: dict[str, str]
     system_prompt: str
     use_monty: bool
+    auth_context: Any = None
     created_at: datetime
     updated_at: datetime
 
@@ -88,7 +90,8 @@ class SessionRecord(BaseModel):
 
 class RunRequest(BaseModel):
     prompt: str
-    context: Any = None
+    auth_context: Any = None
+    llm_context: Any = None
 
 
 class ToolCallEntry(BaseModel):

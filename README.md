@@ -4,7 +4,7 @@
 
 Self-hosted platform for running AI agents across multiple LLM providers. Define tools once in Pydantic — they work with any supported agent harness (Claude, Gemini/Antigravity).
 
-Your microservices annotate functions with `@tool`. OmniAgent discovers them, routes calls, passes user context, and manages agent sessions. Use the built-in UI or hit the REST API.
+Your microservices annotate functions with `@tool`. OmniAgent discovers them, routes calls, passes `auth_context` (blind-piped) and `llm_context` (LLM-visible), and manages agent sessions. Use the built-in UI or hit the REST API.
 
 ---
 
@@ -26,16 +26,16 @@ flowchart LR
     Client["Client UI"] -->|"API Key"| CP["Control Plane"]
     Worker -->|"Internal Key"| CP
     Worker -->|"JWT Assertion"| Service["Service"]
-    Client -->|"context via CP→Worker→Service"| Service
+    Client -->|"auth_context + llm_context<br/>via CP→Worker→Service"| Service
 ```
 
 ### Execution flow
 
 ```mermaid
 flowchart TD
-    UI["Client UI"] -->|"1. POST /sessions/X/run<br/>{prompt, context}"| CP["Control Plane"]
+    UI["Client UI"] -->|"1. POST /sessions/X/run<br/>{prompt, auth_context, llm_context}"| CP["Control Plane"]
     CP -->|"UPDATE sessions<br/>(messages + context)"| DB["Postgres"]
-    CP -->|"DEFER job (Procrastinate)<br/>{history, context}"| Q["Job Queue"]
+    CP -->|"DEFER job (Procrastinate)<br/>{history, auth_context, llm_context}"| Q["Job Queue"]
     CP -->|"202 accepted"| UI
     UI -->|"2. GET /sessions/X/stream"| CP
     CP <-->|"pub/sub"| Redis["Redis<br/>channel: session_X"]
@@ -47,7 +47,7 @@ flowchart TD
     Worker -->|"2. build system prompt"| Worker
     Worker -->|"3. adapter.run()"| Harness["Claude SDK<br/>or Antigravity"]
     Harness -->|"LLM decides<br/>to call tool"| Tool["tool_executor()"]
-    Tool -->|"POST /execute<br/>X-OmniAgent-Assertion: JWT<br/>{tool, input, context, session_id}"| Service["Service"]
+    Tool -->|"POST /execute<br/>X-OmniAgent-Assertion: JWT<br/>{tool, input, auth_context, llm_context, session_id}"| Service["Service"]
     Service -->|"output dict"| Tool
     Tool -->|"_emit_event()"| Event["/internal/sessions/X/event"]
     Event -->|"UPDATE tool_calls"| DB
@@ -59,16 +59,17 @@ flowchart TD
     Redis -->|"SSE: complete"| UI
 ```
 
-### Context forwarding (identity propagation)
+### Context forwarding (identity + personalization)
 
-Consumer-defined opaque blob forwarded blindly through every hop. OmniAgent never reads it.
+`auth_context` is blind-piped to tools only — LLM never sees it. `llm_context` is injected into the system prompt for personalization. OmniAgent never reads either.
 
 ```mermaid
 flowchart LR
-    Client["Client UI"] -->|"POST /sessions/X/run<br/>context: {access_token, user_id, tenant}"| CP["Control Plane"]
-    CP -->|"defer_async<br/>payload.context"| Worker["Worker"]
-    Worker -->|"POST /execute<br/>body.context"| Service["Service"]
-    Service -->|"ToolInput.context<br/>available in tool fn"| Tool["Tool Function"]
+    Client["Client UI"] -->|"POST /sessions/X/run<br/>auth_context: {token, org}<br/>llm_context: {name, locale}"| CP["Control Plane"]
+    CP -->|"defer_async<br/>payload.auth_context<br/>payload.llm_context"| Worker["Worker"]
+    Worker -->|"POST /execute<br/>body.auth_context<br/>body.llm_context"| Service["Service"]
+    Worker -->|"_build_system_prompt<br/>llm_context injected"| LLM["LLM"]
+    Service -->|"ToolInput.auth_context<br/>ToolInput.llm_context"| Tool["Tool Function"]
     Tool -->|"validate token<br/>call downstream APIs"| Downstream["Consumer's Services"]
 ```
 
@@ -259,7 +260,7 @@ async def execute(request: Request):
         raise HTTPException(500, detail=str(e)) from e
 ```
 
-`handle_execute` validates the worker JWT assertion (when `OMNIAGENT_INTERNAL_KEY` is set) and injects `context` into `ToolInput`. Your tool functions receive the consumer's opaque context blob automatically.
+`handle_execute` validates the worker JWT assertion (when `OMNIAGENT_INTERNAL_KEY` is set) and injects `auth_context` and `llm_context` into `ToolInput`. Your tool functions receive both automatically — `auth_context` for downstream API calls, `llm_context` for personalization (name, locale, preferences).
 
 Tools must be stateless — consecutive calls in the same session may hit different replicas.
 
@@ -308,11 +309,11 @@ SESSION=$(curl -s -X POST http://localhost:8080/sessions \
   -H "Content-Type: application/json" \
   -d '{"agent_name": "support-bot"}' | jq -r .id)
 
-# Send a message (with optional context — forwarded to tools)
+# Send a message (auth_context blind-piped to tools, llm_context visible to LLM)
 curl -X POST http://localhost:8080/sessions/$SESSION/run \
   -H "X-OmniAgent-Key: <key>" \
   -H "Content-Type: application/json" \
-  -d '{"prompt": "Charge $50 to card tok_visa", "context": {"user_id": "u1", "tenant": "t1"}}'
+  -d '{"prompt": "Charge $50 to card tok_visa", "auth_context": {"user_id": "u1", "token": "..."}, "llm_context": {"name": "Alice", "locale": "en-US"}}'
 # → 202 Accepted
 
 # Stream events (SSE)

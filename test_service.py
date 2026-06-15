@@ -8,6 +8,8 @@ from fastapi import FastAPI, HTTPException, Request
 import omniagent
 from omniagent import ToolInput, ToolOutput, tool
 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+
 # ── Weather ────────────────────────────────────────────────────────────────
 
 
@@ -26,6 +28,11 @@ class WeatherOutput(ToolOutput):
     description="Get the current weather for a city. Returns temperature, condition, humidity, and wind speed."
 )
 async def get_weather(inp: WeatherInput) -> WeatherOutput:
+    logger.info(
+        "get_weather: city=%s user=%s",
+        inp.city,
+        inp.auth_context and inp.auth_context.get("user_id", "anon"),
+    )
     data = {
         "london": WeatherOutput(temperature_c=12, condition="rainy", humidity_pct=82, wind_kmh=25),
         "tokyo": WeatherOutput(temperature_c=28, condition="sunny", humidity_pct=60, wind_kmh=10),
@@ -313,7 +320,11 @@ logger = logging.getLogger(__name__)
 @app.post("/execute")
 async def execute(request: Request):
     try:
-        output = await omniagent.handle_execute(await request.json(), dict(request.headers))
+        body = await request.json()
+        # ponytail: fabricate test auth_context so hooks always see values
+        if "auth_context" not in body:
+            body["auth_context"] = {"user_id": "test-user", "tenant": "demo"}
+        output = await omniagent.handle_execute(body, dict(request.headers))
         return {"output": output}
     except ValueError as e:
         raise HTTPException(401, detail=str(e)) from e
@@ -323,6 +334,35 @@ async def execute(request: Request):
         logger.exception("execute failed")
         raise HTTPException(500, detail=str(e)) from e
 
+
+# ── Pre/post execute hooks ──────────────────────────────────────────────────
+
+
+async def auth_hook(tool_name: str, input_data: dict, auth_context):
+    """Block paid tools if no valid tenant/auth present."""
+    paid_tools = {"test-service.estimate_flight", "test-service.convert_currency"}
+    if tool_name in paid_tools:
+        if not auth_context or not auth_context.get("user_id"):
+            raise PermissionError(f"Tool '{tool_name}' requires auth_context.user_id")
+        logger.info(
+            "auth: tool=%s user=%s tenant=%s",
+            tool_name,
+            auth_context.get("user_id"),
+            auth_context.get("tenant", "unknown"),
+        )
+
+
+async def audit_hook(tool_name: str, input_data: dict, auth_context, output: dict):
+    logger.info(
+        "audit: tool=%s user=%s ok", tool_name, auth_context and auth_context.get("user_id", "anon")
+    )
+
+
+omniagent.register_before_execute(auth_hook)
+omniagent.register_after_execute(audit_hook)
+
+
+# ── Init ────────────────────────────────────────────────────────────────────
 
 api_key = os.environ.get("OMNIAGENT_API_KEY")
 if not api_key:

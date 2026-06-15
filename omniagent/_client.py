@@ -13,8 +13,8 @@ logger = logging.getLogger(__name__)
 
 _config: dict[str, Any] = {}
 
-BeforeHook = Callable[[str, dict, Any], Awaitable[None]]
-AfterHook = Callable[[str, dict, Any, dict], Awaitable[None]]
+BeforeHook = Callable[[str, dict, Any], Awaitable[None]]  # tool, input, auth_context
+AfterHook = Callable[[str, dict, Any, dict], Awaitable[None]]  # tool, input, auth_context, output
 _before_hooks: list[BeforeHook] = []
 _after_hooks: list[AfterHook] = []
 
@@ -22,7 +22,7 @@ _after_hooks: list[AfterHook] = []
 def register_before_execute(hook: BeforeHook) -> None:
     """Register an async callback invoked before every tool execution.
 
-    Signature: async def hook(tool: str, input: dict, context: Any) -> None
+    Signature: async def hook(tool: str, input: dict, auth_context: Any) -> None
 
     Raise an exception to block execution.  Hooks run in registration order.
     """
@@ -32,7 +32,7 @@ def register_before_execute(hook: BeforeHook) -> None:
 def register_after_execute(hook: AfterHook) -> None:
     """Register an async callback invoked after every tool execution.
 
-    Signature: async def hook(tool: str, input: dict, context: Any, output: dict) -> None
+    Signature: async def hook(tool: str, input: dict, auth_context: Any, output: dict) -> None
 
     Hooks always run — even if the tool function raised.  Exceptions from
     after-hooks are logged and swallowed (they cannot change the result).
@@ -90,8 +90,9 @@ def init(
 async def handle_execute(body: dict, headers: dict[str, str]) -> dict:
     """Call from your /execute route — passes parsed body and headers.
 
-    Extracts tool, input, context from body and X-OmniAgent-Assertion from headers.
-    Validates worker assertion automatically when OMNIAGENT_INTERNAL_KEY is set.
+    Extracts tool, input, auth_context, llm_context from body and
+    X-OmniAgent-Assertion from headers.  Validates worker assertion
+    automatically when OMNIAGENT_INTERNAL_KEY is set.
 
     Raises ValueError (auth), KeyError (missing field / unknown tool). Map to
     your framework's error responses — all other exceptions are bubbled up
@@ -104,7 +105,7 @@ async def handle_execute(body: dict, headers: dict[str, str]) -> dict:
     return await _handle_execute_impl(
         tool=body["tool"],
         input=body["input"],
-        context=body.get("context"),
+        auth_context=body.get("auth_context"),
         worker_assertion=headers.get("x-omniagent-assertion"),
     )
 
@@ -112,7 +113,7 @@ async def handle_execute(body: dict, headers: dict[str, str]) -> dict:
 async def _handle_execute_impl(
     tool: str,
     input: dict,
-    context: Any = None,
+    auth_context: Any = None,
     *,
     worker_assertion: str | None = None,
 ) -> dict:
@@ -125,14 +126,14 @@ async def _handle_execute_impl(
 
     # Before-hooks — any exception blocks execution.
     for hook in _before_hooks:
-        await hook(tool, input, context)
+        await hook(tool, input, auth_context)
 
     entry = _local_registry.get(tool)
     if entry is None:
         raise KeyError(f"Tool '{tool}' not found")
     merged = {**input}
-    if context is not None:
-        merged["context"] = context
+    if auth_context is not None:
+        merged["auth_context"] = auth_context
     parsed = entry["input"].model_validate(merged)
 
     output: dict = {}
@@ -146,7 +147,7 @@ async def _handle_execute_impl(
         # After-hooks always run.  Exceptions logged, never propagate.
         for hook in _after_hooks:
             try:
-                await hook(tool, input, context, output)
+                await hook(tool, input, auth_context, output)
             except Exception:
                 logger.exception("after-execute hook failed for tool=%s", tool)
 

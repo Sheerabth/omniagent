@@ -5,8 +5,9 @@ from pydantic import BaseModel, Field
 
 class ToolInput(BaseModel):
     observation: str = Field(default="", description="Why this tool is being called")
-    context: Any = Field(
-        default=None, description="Opaque caller context forwarded from the session run request"
+    auth_context: Any = Field(
+        default=None,
+        description="Auth tokens/scopes — agent default, runtime override. Blind-piped, never seen by LLM.",
     )
 
 

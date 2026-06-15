@@ -1,0 +1,1 @@
+ALTER TABLE agents ADD COLUMN auth_context JSONB;

@@ -121,6 +121,7 @@ async def _fetch_session_config(session_id: str) -> dict[str, Any]:
         "model": agent["model"],
         "system_prompt": agent["system_prompt"],
         "use_monty": agent["use_monty"],
+        "auth_context": agent.get("auth_context"),
         "skills": skills,
         "tool_snapshot": tool_snapshot,
     }
@@ -131,8 +132,7 @@ async def _tool_executor(
     tool_name: str,
     input_data: dict,
     tool_snapshot: dict[str, Any],
-    harness: str = "unknown",
-    context: Any = None,
+    auth_context: Any = None,
 ) -> dict:
     tool = tool_snapshot.get(tool_name)
     if not tool:
@@ -145,8 +145,8 @@ async def _tool_executor(
     local_name = tool_name.split(".", 1)[-1] if "." in tool_name else tool_name
 
     body: dict[str, Any] = {"tool": local_name, "input": input_data}
-    if context is not None:
-        body["context"] = context
+    if auth_context is not None:
+        body["auth_context"] = auth_context
         body["session_id"] = session_id
 
     resp = await _get_http_client().post(
@@ -178,8 +178,10 @@ def _safe_tool_name(name: str) -> str:
     return name.replace(".", "__").replace("-", "_")
 
 
-def _build_system_prompt(config: dict[str, Any]) -> str:
+def _build_system_prompt(config: dict[str, Any], llm_context: dict[str, Any] | None = None) -> str:
     lines = [config.get("system_prompt", "")]
+    if llm_context:
+        lines.append(f"\nUser context: {json.dumps(llm_context, default=str)}")
 
     for skill in config.get("skills", []):
         if skill.get("system_prompt"):
@@ -210,7 +212,9 @@ def _build_system_prompt(config: dict[str, Any]) -> str:
         for tool_name, schema in tool_snapshot.items():
             fn = _safe_tool_name(tool_name)
             props = schema.get("input_schema", {}).get("properties", {})
-            params = ", ".join(f"{k}=..." for k in props if k != "observation")
+            params = ", ".join(
+                f"{k}=..." for k in props if k not in ("observation", "auth_context", "llm_context")
+            )
             out_schema = schema.get("output_schema") or {}
             out_props = out_schema.get("properties", out_schema)
             out_info = json.dumps(out_props) if out_props else "dict"
@@ -232,20 +236,40 @@ def _build_system_prompt(config: dict[str, Any]) -> str:
 async def run_agent_job(session_id: str, payload: str) -> None:
     data = json.loads(payload)
     history = data.get("history", [])
-    context: Any = data.get("context")
+    runtime_auth_context: Any = data.get("auth_context")
+    runtime_llm_context: Any = data.get("llm_context")
 
     config = await _fetch_session_config(session_id)
     harness = config["harness"]
     model = config["model"]
     use_monty = config["use_monty"]
     tool_snapshot = config["tool_snapshot"]
-    system_prompt = _build_system_prompt(config)
+
+    # Runtime auth_context replaces agent default wholesale — no merge.
+    auth_context = (
+        runtime_auth_context if runtime_auth_context is not None else config.get("auth_context")
+    )
+
+    system_prompt = _build_system_prompt(config, runtime_llm_context)
 
     llm_api_key = os.environ.get(f"OMNIAGENT_{harness.upper()}_API_KEY")
 
     async def tool_exec(tool_name: str, input_data: dict) -> dict:
+        await _emit_event(
+            session_id,
+            {
+                "type": "tool_call",
+                "tool": tool_name,
+                "input": input_data,
+                "harness": harness,
+            },
+        )
         output = await _tool_executor(
-            session_id, tool_name, input_data, tool_snapshot, harness, context
+            session_id,
+            tool_name,
+            input_data,
+            tool_snapshot,
+            auth_context=auth_context,
         )
         await _emit_event(
             session_id,
@@ -262,6 +286,14 @@ async def run_agent_job(session_id: str, payload: str) -> None:
 
     async def emit(event: dict) -> None:
         await _emit_event(session_id, event)
+
+    await emit(
+        {
+            "type": "system_prompt",
+            "content": system_prompt,
+            "input": history,
+        }
+    )
 
     try:
         if harness == "antigravity":

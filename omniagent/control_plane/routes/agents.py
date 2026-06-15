@@ -29,14 +29,15 @@ async def create_agent(body: AgentCreate, _=Depends(require_any)):
         await _validate_skill_refs(conn, body.skill_refs)
         rows = await conn.execute(
             """
-            INSERT INTO agents (name, version, harness, model, skill_refs, system_prompt, use_monty)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO agents (name, version, harness, model, skill_refs, system_prompt, use_monty, auth_context)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (name, version) DO UPDATE
               SET harness       = EXCLUDED.harness,
                   model         = EXCLUDED.model,
                   skill_refs    = EXCLUDED.skill_refs,
                   system_prompt = EXCLUDED.system_prompt,
                   use_monty     = EXCLUDED.use_monty,
+                  auth_context  = EXCLUDED.auth_context,
                   updated_at    = NOW()
             RETURNING *
             """,
@@ -48,6 +49,7 @@ async def create_agent(body: AgentCreate, _=Depends(require_any)):
                 json.dumps(body.skill_refs),
                 body.system_prompt,
                 body.use_monty,
+                json.dumps(body.auth_context) if body.auth_context else None,
             ),
         )
         return await rows.fetchone()

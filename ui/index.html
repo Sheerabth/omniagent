@@ -197,6 +197,8 @@
         <input type="checkbox" id="agent-monty" style="width:auto;margin:0">
         Enable Monty (Python sandbox with tool access)
       </label>
+      <label>Auth Context</label>
+      <textarea id="agent-auth-context" placeholder='{"service_account_token": "...", "org_id": "..."}'></textarea>
       <label>Skills</label>
       <div id="agent-skills-checkboxes" class="checkbox-grid"></div>
       <div class="btn-row">
@@ -543,6 +545,7 @@ function newAgent() {
   document.getElementById('agent-harness').value = 'antigravity';
   document.getElementById('agent-system').value = '';
   document.getElementById('agent-monty').checked = false;
+  document.getElementById('agent-auth-context').value = '';
   updateModelOptions();
   document.getElementById('agent-delete-btn').style.display = 'none';
   renderSkillCheckboxes({});
@@ -558,6 +561,7 @@ function editAgent(name, version) {
   updateModelOptions(a.model || '');
   document.getElementById('agent-system').value = a.system_prompt || '';
   document.getElementById('agent-monty').checked = !!a.use_monty;
+  document.getElementById('agent-auth-context').value = a.auth_context ? JSON.stringify(a.auth_context, null, 2) : '';
   document.getElementById('agent-delete-btn').style.display = 'inline-block';
   renderSkillCheckboxes(a.skill_refs || {});
   document.getElementById('agent-form').style.display = 'block';
@@ -595,6 +599,11 @@ async function saveAgent() {
     system_prompt: document.getElementById('agent-system').value.trim(),
     use_monty: document.getElementById('agent-monty').checked,
     skill_refs: getCheckedSkillRefs(),
+    auth_context: (() => {
+      const raw = document.getElementById('agent-auth-context').value.trim();
+      if (!raw) return null;
+      try { return JSON.parse(raw); } catch (e) { throw new Error('auth_context: invalid JSON'); }
+    })(),
   };
   if (!body.name) { toast('Name required', false); return; }
   try {
@@ -699,7 +708,9 @@ function streamSession(sessionId) {
     if (chatRunId !== myRunId) return;
     const ev = JSON.parse(e.data);
 
-    if (ev.type === 'tool_call') {
+    if (ev.type === 'system_prompt') {
+      sidebarSystemPrompt(ev.content, ev.input);
+    } else if (ev.type === 'tool_call') {
       sidebarToolCalling(ev.tool, ev.input);
     } else if (ev.type === 'tool_result') {
       sidebarToolDone(ev.tool, ev.output, ev.success, ev.input);
@@ -760,6 +771,17 @@ function removeThinking() {
 
 function sidebarIcon(toolName) {
   return '⚙';
+}
+
+function sidebarSystemPrompt(prompt, history) {
+  const items = document.getElementById('chat-sidebar-items');
+  const div = document.createElement('div');
+  div.className = 'stool';
+  div.innerHTML = `<div class="stool-header"><span class="stool-icon">🧠</span><span class="stool-name">System Prompt</span></div>`;
+  if (prompt) div.appendChild(sidebarSection('prompt', prompt));
+  if (history) div.appendChild(sidebarSection('history', history));
+  items.appendChild(div);
+  items.scrollTop = items.scrollHeight;
 }
 
 function sidebarSection(label, value) {
