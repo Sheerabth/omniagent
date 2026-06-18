@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>OmniAgent</title>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: system-ui, sans-serif; background: #0f0f0f; color: #e0e0e0; min-height: 100vh; }
@@ -41,6 +42,8 @@
   .btn-primary:hover { background: #3d6de0; }
   .btn-danger { background: #2a1010; color: #f87171; border: 1px solid #4a1a1a; }
   .btn-danger:hover { background: #3a1515; }
+  .btn-xs { font-size: 11px; padding: 2px 7px; }
+  .ns-header { display:flex; justify-content:space-between; align-items:center; padding: 6px 10px 2px; color:#555; font-size:11px; text-transform:uppercase; letter-spacing:.05em; }
   .btn-ghost { background: transparent; color: #888; border: 1px solid #333; }
   .btn-ghost:hover { color: #fff; border-color: #555; }
   .new-btn { width: 100%; margin-bottom: 10px; background: #1e1e1e; color: #aaa; border: 1px dashed #333; }
@@ -66,7 +69,14 @@
   .msg { max-width: 720px; }
   .msg.user { align-self: flex-end; }
   .msg.assistant { align-self: flex-start; }
-  .msg-bubble { padding: 10px 14px; border-radius: 10px; font-size: 14px; line-height: 1.5; white-space: pre-wrap; }
+  .msg-bubble { padding: 10px 14px; border-radius: 10px; font-size: 14px; line-height: 1.5; }
+  .msg.user .msg-bubble { white-space: pre-wrap; }
+  .msg-bubble h1,.msg-bubble h2,.msg-bubble h3 { margin: 8px 0 4px; }
+  .msg-bubble p { margin: 4px 0; }
+  .msg-bubble ul,.msg-bubble ol { margin: 4px 0 4px 20px; }
+  .msg-bubble code { background:#2a2a2a; padding: 1px 4px; border-radius: 3px; font-size: 13px; }
+  .msg-bubble pre { background:#2a2a2a; padding: 8px; border-radius: 6px; overflow-x:auto; margin: 6px 0; }
+  .msg-bubble pre code { background: none; padding: 0; }
   .msg.user .msg-bubble { background: #1e2a50; color: #c9d8ff; border: 1px solid #2a3a6a; border-bottom-right-radius: 2px; }
   .msg.assistant .msg-bubble { background: #1a1a1a; color: #e0e0e0; border: 1px solid #2a2a2a; border-bottom-left-radius: 2px; }
   .msg-meta { font-size: 11px; color: #555; margin-top: 4px; padding: 0 4px; }
@@ -128,16 +138,35 @@
 <!-- TOOLS -->
 <div id="panel-tools" class="panel active">
   <div class="list-col">
+    <button class="new-btn btn-ghost" onclick="showImportPanel()">+ Import OpenAPI</button>
     <h2>Registered Tools</h2>
     <div id="tools-list"><p class="empty">Loading…</p></div>
   </div>
   <div class="form-col">
     <div id="tool-detail" class="card" style="display:none">
-      <h2 id="td-name"></h2>
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <h2 id="td-name" style="margin:0"></h2>
+        <button class="btn-danger" onclick="deleteTool(document.getElementById('td-name').textContent)">Delete</button>
+      </div>
       <label>Description</label>
       <p id="td-desc" style="font-size:13px;color:#ccc;margin-top:4px"></p>
+      <label>Endpoint</label>
+      <p id="td-endpoint" style="font-size:12px;color:#8ab4f8;font-family:monospace;margin-top:4px"></p>
       <label>Input Schema</label>
       <pre id="td-in" style="background:#111;padding:10px;border-radius:6px;font-size:11px;overflow:auto;margin-top:4px;color:#aaa;white-space:pre-wrap"></pre>
+    </div>
+    <div id="tool-import-panel" class="card">
+      <h2>Import OpenAPI Spec</h2>
+      <label>Spec (JSON or YAML)</label>
+      <textarea id="import-spec" style="min-height:200px;font-family:monospace;font-size:11px" placeholder="Paste OpenAPI 3.x spec here…" oninput="previewImportBaseUrl()"></textarea>
+      <label>Namespace (required)</label>
+      <input type="text" id="import-namespace" placeholder="e.g. stripe">
+      <label>Base URL override (optional)</label>
+      <input type="text" id="import-base-url" placeholder="Leave blank to use spec servers[0]">
+      <div class="btn-row">
+        <button class="btn-primary" onclick="doImportOpenAPI()">Import</button>
+      </div>
+      <p id="import-result" style="margin-top:12px;font-size:12px;color:#6fcf6f;display:none"></p>
     </div>
   </div>
 </div>
@@ -418,23 +447,89 @@ async function deleteApiKey() {
 
 // ── Tools ──────────────────────────────────────────────────────────────────
 
+function showImportPanel() {
+  document.getElementById('tool-detail').style.display = 'none';
+  document.getElementById('tool-import-panel').style.display = 'block';
+}
+
 function renderTools() {
   const el = document.getElementById('tools-list');
-  if (!allTools.length) { el.innerHTML = '<p class="empty">No tools registered</p>'; return; }
-  el.innerHTML = allTools.map(t => `
-    <div class="item" onclick="showTool('${t.name}')">
-      <div class="name">${t.name}</div>
-      <div class="sub">${t.service}</div>
-    </div>`).join('');
+  if (!allTools.length) { el.innerHTML = '<p class="empty">No tools imported</p>'; return; }
+  const byNs = {};
+  allTools.forEach(t => { const ns = t.namespace || ''; (byNs[ns] = byNs[ns] || []).push(t); });
+  el.innerHTML = Object.entries(byNs).map(([ns, tools]) => `
+    <div class="ns-header">
+      <span>${ns}</span>
+      <button class="btn-danger btn-xs" onclick="event.stopPropagation();deleteNamespace('${ns}')">Delete all</button>
+    </div>
+    ${tools.map(t => `
+    <div class="item" onclick="showTool('${escHtml(t.name)}')">
+      <div class="name">${escHtml(t.name)}</div>
+      <div class="sub">${t.openapi_method} ${t.openapi_path}</div>
+    </div>`).join('')}`).join('');
+}
+
+async function deleteTool(name) {
+  if (!confirm(`Delete tool "${name}"?`)) return;
+  try {
+    await api('DELETE', '/tools/' + encodeURIComponent(name));
+    toast('Tool deleted');
+    await loadAll();
+    document.getElementById('tool-detail').style.display = 'none';
+    document.getElementById('tool-import-panel').style.display = 'block';
+  } catch(e) { toast(e.message, false); }
+}
+
+async function deleteNamespace(ns) {
+  if (!confirm(`Delete all tools in namespace "${ns}"?`)) return;
+  try {
+    await api('DELETE', '/tools/namespace/' + encodeURIComponent(ns));
+    toast('Namespace deleted');
+    await loadAll();
+    document.getElementById('tool-detail').style.display = 'none';
+    document.getElementById('tool-import-panel').style.display = 'block';
+  } catch(e) { toast(e.message, false); }
 }
 
 function showTool(name) {
   const t = allTools.find(x => x.name === name);
   if (!t) return;
+  document.getElementById('tool-import-panel').style.display = 'none';
   document.getElementById('tool-detail').style.display = 'block';
   document.getElementById('td-name').textContent = t.name;
   document.getElementById('td-desc').textContent = t.description || '—';
+  document.getElementById('td-endpoint').textContent = `${t.openapi_method} ${t.openapi_base_url}${t.openapi_path}`;
   document.getElementById('td-in').textContent = JSON.stringify(t.input_schema, null, 2);
+}
+
+function previewImportBaseUrl() {
+  try {
+    const raw = document.getElementById('import-spec').value.trim();
+    if (!raw) return;
+    const spec = raw.startsWith('{') ? JSON.parse(raw) : null;
+    if (spec && spec.servers && spec.servers[0]) {
+      const el = document.getElementById('import-base-url');
+      if (!el.value) el.placeholder = spec.servers[0].url;
+    }
+  } catch (_) {}
+}
+
+async function doImportOpenAPI() {
+  const specRaw = document.getElementById('import-spec').value.trim();
+  const namespace = document.getElementById('import-namespace').value.trim();
+  const baseUrl = document.getElementById('import-base-url').value.trim() || null;
+  const resultEl = document.getElementById('import-result');
+  resultEl.style.display = 'none';
+  if (!specRaw || !namespace) { toast('Spec and namespace required', true); return; }
+  let spec;
+  try { spec = JSON.parse(specRaw); } catch (_) { spec = specRaw; }
+  const res = await api('POST', '/tools/import-openapi', { spec, namespace, base_url: baseUrl });
+  resultEl.style.display = 'block';
+  resultEl.textContent = `Imported ${res.imported} tools: ${res.tools.join(', ')}`;
+  const [tools] = await Promise.all([api('GET', '/tools')]);
+  allTools = tools;
+  renderTools();
+  renderToolCheckboxes('skill-tools-checkboxes', []);
 }
 
 // ── Skills ─────────────────────────────────────────────────────────────────
@@ -544,8 +639,10 @@ function editAgentEl(el) { editAgent(el.dataset.name, el.dataset.version); }
 
 const MODEL_OPTIONS = {
   antigravity: [
-    { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash (default)' },
-    { value: 'gemini-2.5-pro',   label: 'Gemini 2.5 Pro' },
+    { value: 'gemini-2.5-flash',                    label: 'Gemini 2.5 Flash' },
+    { value: 'gemini-2.5-pro',                      label: 'Gemini 2.5 Pro' },
+    { value: 'gemini-3.1-pro-preview-customtools',  label: 'Gemini 3.1 Pro Preview (agentic)' },
+    { value: 'gemini-3.5-flash',                    label: 'Gemini 3.5 Flash (default)' },
   ],
   claude: [
     { value: 'claude-sonnet-4-6',         label: 'Claude Sonnet 4.6 (default)' },
@@ -716,29 +813,13 @@ async function switchToSession(id) {
   try {
     const status = await api('GET', '/sessions/' + id + '/status');
     (status.messages || []).forEach(m => appendMsg(m.role, m.content));
-    const toolCallsBySkill = {};
-    (status.tool_calls || []).forEach(tc => {
-      const key = tc.skill_name || '';
-      (toolCallsBySkill[key] = toolCallsBySkill[key] || []).push(tc);
-    });
-    Object.entries(toolCallsBySkill).forEach(([skillName, calls]) => {
-      if (skillName) {
-        const header = document.createElement('div');
-        header.className = 'stool-skill-header';
-        header.textContent = skillName;
-        document.getElementById('chat-sidebar-items').appendChild(header);
-      }
-      calls.forEach(tc => {
-        const div = document.createElement('div');
-        div.className = 'stool';
-        const icon = tc.success ? '✓' : '✕';
-        const cls = tc.success ? 'ok' : 'err';
-        div.innerHTML = `<div class="stool-header"><span class="stool-icon">${icon}</span><span class="stool-name">${escHtml(tc.tool_name)}</span><span class="stool-status ${cls}">${tc.success ? 'done' : 'failed'}</span></div>`;
-        if (tc.input) div.appendChild(sidebarSection('input', tc.input));
-        if (tc.output) div.appendChild(sidebarSection('output', tc.output));
-        document.getElementById('chat-sidebar-items').appendChild(div);
-      });
-    });
+    renderSidebar(status.tool_calls || []);
+    if (status.status === 'running') {
+      chatBusy = true;
+      document.getElementById('chat-send').disabled = true;
+      thinkingEl = appendThinking();
+      streamSession(id);
+    }
   } catch(e) { toast('Load failed: ' + e.message, false); }
   renderSessions();
 }
@@ -807,40 +888,63 @@ async function chatSend() {
   }
 }
 
+function renderSidebar(toolCalls) {
+  const items = document.getElementById('chat-sidebar-items');
+  items.innerHTML = '';
+  const bySkill = {};
+  (toolCalls || []).forEach(tc => {
+    const key = tc.skill_name || '';
+    (bySkill[key] = bySkill[key] || []).push(tc);
+  });
+  Object.entries(bySkill).forEach(([skillName, calls]) => {
+    if (skillName) {
+      const header = document.createElement('div');
+      header.className = 'stool-skill-header';
+      header.textContent = skillName;
+      items.appendChild(header);
+    }
+    calls.forEach(tc => {
+      const div = document.createElement('div');
+      div.className = 'stool';
+      const icon = tc.success ? '✓' : '✕';
+      const cls = tc.success ? 'ok' : 'err';
+      div.innerHTML = `<div class="stool-header"><span class="stool-icon">${icon}</span><span class="stool-name">${escHtml(tc.tool_name)}</span><span class="stool-status ${cls}">${tc.success ? 'done' : 'failed'}</span></div>`;
+      if (tc.input) div.appendChild(sidebarSection('input', tc.input));
+      if (tc.output) div.appendChild(sidebarSection('output', tc.output));
+      items.appendChild(div);
+    });
+  });
+}
+
 function streamSession(sessionId) {
   if (chatSSE) chatSSE.close();
   chatSSE = new EventSource('/sessions/' + sessionId + '/stream?key=' + encodeURIComponent(UI_API_KEY));
-  const myRunId = chatRunId;
 
   chatSSE.onmessage = async (e) => {
-    if (chatRunId !== myRunId) return;
+    if (chatSessionId !== sessionId) return;
     const ev = JSON.parse(e.data);
 
-    if (ev.type === 'system_prompt') {
-      sidebarSystemPrompt(ev.content, ev.input);
-    } else if (ev.type === 'tool_call') {
-      sidebarToolCalling(ev.tool, ev.input);
-    } else if (ev.type === 'tool_result') {
-      sidebarToolDone(ev.tool, ev.output, ev.success, ev.input);
+    if (ev.type === 'update') {
+      try {
+        const status = await api('GET', '/sessions/' + sessionId + '/status');
+        renderSidebar(status.tool_calls || []);
+      } catch(_) {}
     } else if (ev.type === 'complete') {
       removeThinking();
       chatSSE.close();
       chatBusy = false;
       document.getElementById('chat-send').disabled = false;
-      if (ev.result != null) {
-        appendMsg('assistant', ev.result);
-      } else {
-        try {
-          const status = await api('GET', '/sessions/' + sessionId + '/status');
-          if (status.result != null) appendMsg('assistant', status.result);
-        } catch(e) { appendMsg('assistant', '⚠ could not fetch result'); }
-      }
+      try {
+        const status = await api('GET', '/sessions/' + sessionId + '/status');
+        renderSidebar(status.tool_calls || []);
+        if (status.result != null) appendMsg('assistant', status.result);
+      } catch(_) { appendMsg('assistant', '⚠ could not fetch result'); }
     } else if (ev.type === 'error') {
       removeThinking();
-      appendMsg('assistant', '⚠ ' + (ev.reason || 'error'));
       chatSSE.close();
       chatBusy = false;
       document.getElementById('chat-send').disabled = false;
+      appendMsg('assistant', '⚠ ' + (ev.reason || 'session failed'));
     }
   };
 
@@ -857,7 +961,7 @@ function appendMsg(role, text) {
   const msgs = document.getElementById('chat-messages');
   const div = document.createElement('div');
   div.className = 'msg ' + role;
-  div.innerHTML = `<div class="msg-bubble">${escHtml(text)}</div>`;
+  div.innerHTML = `<div class="msg-bubble">${role === 'assistant' ? marked.parse(text) : escHtml(text)}</div>`;
   msgs.appendChild(div);
   msgs.scrollTop = msgs.scrollHeight;
   return div;
@@ -875,21 +979,6 @@ function appendThinking() {
 
 function removeThinking() {
   if (thinkingEl) { thinkingEl.remove(); thinkingEl = null; }
-}
-
-function sidebarIcon(toolName) {
-  return '⚙';
-}
-
-function sidebarSystemPrompt(prompt, history) {
-  const items = document.getElementById('chat-sidebar-items');
-  const div = document.createElement('div');
-  div.className = 'stool';
-  div.innerHTML = `<div class="stool-header"><span class="stool-icon">🧠</span><span class="stool-name">System Prompt</span></div>`;
-  if (prompt) div.appendChild(sidebarSection('prompt', prompt));
-  if (history) div.appendChild(sidebarSection('history', history));
-  items.appendChild(div);
-  items.scrollTop = items.scrollHeight;
 }
 
 function sidebarSection(label, value) {
@@ -911,45 +1000,6 @@ function sidebarSection(label, value) {
   sec.appendChild(lbl);
   sec.appendChild(body);
   return sec;
-}
-
-function sidebarToolCalling(toolName, input) {
-  const items = document.getElementById('chat-sidebar-items');
-  const div = document.createElement('div');
-  div.className = 'stool';
-  div.dataset.tool = toolName;
-  div.dataset.run = chatRunId;
-  div.innerHTML = `<div class="stool-header"><span class="stool-icon">${sidebarIcon(toolName)}</span><span class="stool-name">${escHtml(toolName)}</span><span class="stool-status">running…</span></div>`;
-  if (input) div.appendChild(sidebarSection('input', input));
-  items.appendChild(div);
-  items.scrollTop = items.scrollHeight;
-}
-
-function sidebarToolDone(toolName, output, success, input) {
-  const items = document.getElementById('chat-sidebar-items');
-  const pending = [...items.querySelectorAll(`.stool[data-tool="${toolName}"][data-run="${chatRunId}"]`)]
-    .find(el => el.querySelector('.stool-status').textContent === 'running…');
-
-  if (pending) {
-    const st = pending.querySelector('.stool-status');
-    st.textContent = success ? 'done' : 'failed';
-    st.className = 'stool-status ' + (success ? 'ok' : 'err');
-    pending.querySelector('.stool-icon').textContent = success ? '✓' : '✕';
-    if (output != null) pending.appendChild(sidebarSection('output', output));
-  } else {
-    // tool_result with no prior tool_call (inner monty sandbox calls include input+output)
-    const div = document.createElement('div');
-    div.className = 'stool';
-    div.dataset.tool = toolName;
-    div.dataset.run = chatRunId;
-    const icon = success ? '✓' : '✕';
-    const stClass = success ? 'ok' : 'err';
-    div.innerHTML = `<div class="stool-header"><span class="stool-icon">${icon}</span><span class="stool-name">${escHtml(toolName)}</span><span class="stool-status ${stClass}">${success ? 'done' : 'failed'}</span></div>`;
-    if (input != null) div.appendChild(sidebarSection('input', input));
-    if (output != null) div.appendChild(sidebarSection('output', output));
-    items.appendChild(div);
-  }
-  items.scrollTop = items.scrollHeight;
 }
 
 function escHtml(s) {

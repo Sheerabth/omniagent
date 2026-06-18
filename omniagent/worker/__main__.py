@@ -17,8 +17,10 @@ async def main() -> None:
     from procrastinate.worker import Worker
 
     from omniagent.control_plane.db import close_pool, init_pool
+    from omniagent.control_plane.migrations import run_migrations
     from omniagent.worker.job import app, run_agent_job  # noqa: F401 — registers task
 
+    await run_migrations(os.environ["DATABASE_URL"])
     await init_pool()
 
     logger.info("Worker starting, polling queue 'default'")

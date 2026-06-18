@@ -14,11 +14,13 @@ from pydantic import BaseModel
 class ToolRecord(BaseModel):
     name: str
     namespace: str
-    service: str
     description: str
     input_schema: dict[str, Any]
     output_schema: dict[str, Any]
-    execute_url: str = ""
+    openapi_method: str
+    openapi_path: str
+    openapi_base_url: str
+    openapi_security: dict | None = None
 
 
 # ── Skills ─────────────────────────────────────────────────────────────────

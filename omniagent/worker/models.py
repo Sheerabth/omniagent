@@ -12,8 +12,10 @@ class ToolSnapshot(BaseModel):
     description: str
     input_schema: dict[str, Any]
     output_schema: dict[str, Any]
-    execute_url: str = ""
-    skill_context: Any = None
+    openapi_method: str
+    openapi_path: str
+    openapi_base_url: str
+    openapi_security: dict | None = None
     skill_name: str = ""
 
 

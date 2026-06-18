@@ -3,7 +3,9 @@
 import logging
 import os
 
+import procrastinate
 import psycopg
+from procrastinate import PsycopgConnector
 
 logger = logging.getLogger(__name__)
 
@@ -12,15 +14,25 @@ MIGRATIONS_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "migrations
 
 async def run_migrations(dsn: str) -> None:
     async with await psycopg.AsyncConnection.connect(dsn, autocommit=True) as conn:
+        # Procrastinate schema — idempotent via pg_tables check (schema-qualified)
+        row = await conn.execute(
+            "SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = 'procrastinate_jobs'"
+        )
+        if not await row.fetchone():
+            proc_app = procrastinate.App(connector=PsycopgConnector(conninfo=dsn))
+            async with proc_app.open_async():
+                await proc_app.schema_manager.apply_schema_async()
+            logger.info("Procrastinate schema applied")
+
+        # Custom migrations
         await conn.execute(
             """
             CREATE TABLE IF NOT EXISTS schema_migrations (
                 filename TEXT PRIMARY KEY,
                 applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
-        """
+            """
         )
-
         rows = await conn.execute("SELECT filename FROM schema_migrations")
         applied = {r[0] for r in await rows.fetchall()}
 
@@ -32,8 +44,10 @@ async def run_migrations(dsn: str) -> None:
             with open(path) as f:
                 sql = f.read()
             logger.info("Applying migration: %s", filename)
-            await conn.execute(sql)
-            await conn.execute("INSERT INTO schema_migrations (filename) VALUES (%s)", (filename,))
+            async with conn.transaction():
+                await conn.execute(sql)
+                await conn.execute(
+                    "INSERT INTO schema_migrations (filename) VALUES (%s) ON CONFLICT DO NOTHING",
+                    (filename,),
+                )
             logger.info("Applied: %s", filename)
-        if not pending:
-            logger.info("All migrations up to date")

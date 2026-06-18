@@ -1,68 +1,88 @@
 from typing import Any
 
+import yaml
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from omniagent.control_plane.auth import require_any
 from omniagent.control_plane.db import get_conn
 from omniagent.control_plane.models import ToolRecord
+from omniagent.control_plane.openapi import parse_spec
 
 router = APIRouter(prefix="/tools", tags=["tools"])
 
 
-class ToolRegisterEntry(BaseModel):
-    name: str
-    description: str
-    input_schema: dict[str, Any]
-    output_schema: dict[str, Any]
-
-
-class ToolRegisterRequest(BaseModel):
+class ImportOpenAPIRequest(BaseModel):
+    spec: Any  # JSON dict or YAML string
     namespace: str
-    service: str
-    execute_url: str
-    tools: list[ToolRegisterEntry]
+    base_url: str | None = None
 
 
-@router.post("/register", status_code=204)
-async def register_tools(body: ToolRegisterRequest, _=Depends(require_any)) -> None:
+@router.post("/import-openapi", status_code=201)
+async def import_openapi(body: ImportOpenAPIRequest, _=Depends(require_any)) -> dict:
     import json
 
-    async with get_conn() as conn:
-        # Check namespace collision: another service owns this namespace
-        rows = await conn.execute(
-            "SELECT DISTINCT service FROM tools WHERE namespace = %s AND service != %s",
-            (body.namespace, body.service),
-        )
-        collision = await rows.fetchone()
-        if collision:
-            raise HTTPException(
-                409,
-                detail=f"Namespace '{body.namespace}' owned by service '{collision['service']}'",
-            )
+    spec = body.spec
+    if isinstance(spec, str):
+        try:
+            spec = yaml.safe_load(spec)
+        except Exception as exc:
+            raise HTTPException(400, detail=f"Invalid YAML/JSON spec: {exc}") from exc
 
-        for t in body.tools:
+    try:
+        tools = parse_spec(spec, body.namespace, body.base_url)
+    except ValueError as exc:
+        raise HTTPException(422, detail=str(exc)) from exc
+    if not tools:
+        raise HTTPException(422, detail="No operations found in spec")
+
+    async with get_conn() as conn, conn.transaction():
+        for t in tools:
             await conn.execute(
                 """
-                INSERT INTO tools (name, namespace, service, description, input_schema, output_schema, execute_url)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (name) DO UPDATE
-                  SET description = EXCLUDED.description,
-                      input_schema = EXCLUDED.input_schema,
-                      output_schema = EXCLUDED.output_schema,
-                      execute_url = EXCLUDED.execute_url,
-                      updated_at = NOW()
-                """,
+                    INSERT INTO tools
+                      (name, namespace, description, input_schema, output_schema,
+                       openapi_method, openapi_path, openapi_base_url, openapi_security)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (name) DO UPDATE
+                      SET namespace        = EXCLUDED.namespace,
+                          description      = EXCLUDED.description,
+                          input_schema     = EXCLUDED.input_schema,
+                          output_schema    = EXCLUDED.output_schema,
+                          openapi_method   = EXCLUDED.openapi_method,
+                          openapi_path     = EXCLUDED.openapi_path,
+                          openapi_base_url = EXCLUDED.openapi_base_url,
+                          openapi_security = EXCLUDED.openapi_security,
+                          updated_at       = NOW()
+                    """,
                 (
                     t.name,
                     body.namespace,
-                    body.service,
                     t.description,
                     json.dumps(t.input_schema),
                     json.dumps(t.output_schema),
-                    body.execute_url,
+                    t.openapi_method,
+                    t.openapi_path,
+                    t.openapi_base_url,
+                    json.dumps(t.openapi_security) if t.openapi_security else None,
                 ),
             )
+
+    return {"imported": len(tools), "tools": [t.name for t in tools]}
+
+
+@router.delete("/{name}", status_code=204)
+async def delete_tool(name: str, _=Depends(require_any)) -> None:
+    async with get_conn() as conn:
+        result = await conn.execute("DELETE FROM tools WHERE name = %s", (name,))
+        if result.rowcount == 0:
+            raise HTTPException(404, detail=f"Tool {name!r} not found")
+
+
+@router.delete("/namespace/{namespace}", status_code=204)
+async def delete_namespace(namespace: str, _=Depends(require_any)) -> None:
+    async with get_conn() as conn:
+        await conn.execute("DELETE FROM tools WHERE namespace = %s", (namespace,))
 
 
 @router.get("", response_model=list[ToolRecord])

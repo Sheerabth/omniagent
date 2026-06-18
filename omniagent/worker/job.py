@@ -1,18 +1,19 @@
 """Procrastinate worker task: run_agent_job."""
 
 import asyncio
+import base64
 import json
 import logging
 import os
+import re
 import time
 from typing import Any
+from urllib.parse import quote
 
 import httpx
-import jwt
 import procrastinate
 from procrastinate import PsycopgConnector
 
-from omniagent._models import ToolInput
 from omniagent.control_plane.models import MessageRecord
 from omniagent.worker.models import (
     BaseEvent,
@@ -53,33 +54,6 @@ def _internal_headers() -> dict[str, str]:
     return {"X-OmniAgent-Key": INTERNAL_KEY}
 
 
-def _make_assertion(session_id: str, tool_name: str) -> str:
-    """Mint a short-lived JWT assertion for worker → service auth.
-
-    Services verify this with verify_worker_assertion() using the same INTERNAL_KEY.
-    """
-    now = int(time.time())
-    return jwt.encode(
-        {
-            "iss": "omniagent-worker",
-            "session_id": session_id,
-            "tool": tool_name,
-            "iat": now,
-            "exp": now + 60,
-        },
-        INTERNAL_KEY,
-        algorithm="HS256",
-    )
-
-
-def _worker_service_headers(session_id: str, tool_name: str) -> dict[str, str]:
-    """Headers the worker sends to external services on /execute."""
-    return {
-        "X-OmniAgent-Assertion": _make_assertion(session_id, tool_name),
-        "X-OmniAgent-Session-Id": session_id,
-    }
-
-
 async def _fetch_session_config(session_id: str) -> SessionConfig:
     from omniagent.control_plane.db import get_conn
 
@@ -106,7 +80,6 @@ async def _fetch_session_config(session_id: str) -> SessionConfig:
 
         skills: list[SkillSnapshot] = []
         all_tool_names: list[str] = []
-        tool_skill_context: dict[str, Any] = {}
         tool_skill_name: dict[str, str] = {}
         for sname, skill_version in skill_versions.items():
             rows = await conn.execute(
@@ -120,7 +93,6 @@ async def _fetch_session_config(session_id: str) -> SessionConfig:
             skills.append(skill_snap)
             for t in skill["tool_names"]:
                 all_tool_names.append(t)
-                tool_skill_context[t] = skill_snap.skill_context
                 tool_skill_name[t] = sname
 
         tool_snapshot: dict[str, ToolSnapshot] = {}
@@ -132,8 +104,10 @@ async def _fetch_session_config(session_id: str) -> SessionConfig:
                     description=tool["description"],
                     input_schema=tool["input_schema"],
                     output_schema=tool["output_schema"],
-                    execute_url=tool["execute_url"] or "",
-                    skill_context=tool_skill_context.get(tool["name"]),
+                    openapi_method=tool["openapi_method"],
+                    openapi_path=tool["openapi_path"],
+                    openapi_base_url=tool["openapi_base_url"],
+                    openapi_security=tool["openapi_security"],
                     skill_name=tool_skill_name.get(tool["name"], ""),
                 )
 
@@ -149,6 +123,56 @@ async def _fetch_session_config(session_id: str) -> SessionConfig:
     )
 
 
+_oauth_cache: dict[str, tuple[str, float]] = {}
+_oidc_discovery_cache: dict[str, str] = {}  # issuer -> token_endpoint
+
+
+async def _get_oidc_token(security: dict, auth_context: dict) -> str:
+    issuer = security["issuer"].rstrip("/")
+    if issuer not in _oidc_discovery_cache:
+        resp = await _get_http_client().get(
+            f"{issuer}/.well-known/openid-configuration", timeout=10
+        )
+        resp.raise_for_status()
+        doc = resp.json()
+        if "token_endpoint" not in doc:
+            raise RuntimeError(f"OIDC discovery at {issuer} missing token_endpoint")
+        _oidc_discovery_cache[issuer] = doc["token_endpoint"]
+    token_url = _oidc_discovery_cache[issuer]
+    return await _get_oauth_token({**security, "token_url": token_url}, auth_context)
+
+
+async def _get_oauth_token(security: dict, auth_context: dict) -> str:
+    try:
+        client_id = auth_context[security["client_id_key"]]
+        client_secret = auth_context[security["client_secret_key"]]
+    except KeyError as e:
+        raise RuntimeError(f"auth_context missing key: {e}") from e
+    cache_key = f"{security.get('token_url', '')}:{client_id}"
+    cached = _oauth_cache.get(cache_key)
+    if cached and time.time() < cached[1] - 30:
+        return cached[0]
+    refresh_token = auth_context.get(security.get("refresh_token_key", "refresh_token"))
+    payload: dict = {
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "scope": " ".join(security.get("scopes", [])),
+    }
+    if refresh_token:
+        payload["grant_type"] = "refresh_token"
+        payload["refresh_token"] = refresh_token
+    else:
+        payload["grant_type"] = "client_credentials"
+    resp = await _get_http_client().post(security["token_url"], data=payload)
+    resp.raise_for_status()
+    data = resp.json()
+    if "access_token" not in data:
+        raise RuntimeError(f"Token response missing access_token: {data}")
+    token = data["access_token"]
+    _oauth_cache[cache_key] = (token, time.time() + data.get("expires_in", 3600))
+    return token
+
+
 async def _tool_executor(
     session_id: str,
     tool_name: str,
@@ -156,39 +180,75 @@ async def _tool_executor(
     tool_snapshot: dict[str, ToolSnapshot],
     auth_context: Any = None,
     agent_name: str = "",
-) -> dict[str, Any]:
+) -> Any:
     tool = tool_snapshot.get(tool_name)
     if not tool:
         raise RuntimeError(f"tool_not_found:{tool_name}")
 
-    execute_url = tool.execute_url
-    if not execute_url:
-        raise RuntimeError(f"tool_no_execute_url:{tool_name}")
+    path_params = set(re.findall(r"\{(\w+)\}", tool.openapi_path))
+    if missing := path_params - input_data.keys():
+        raise RuntimeError(f"missing_path_params:{missing}")
+    url = tool.openapi_base_url.rstrip("/") + tool.openapi_path
+    for k in path_params:
+        url = url.replace(f"{{{k}}}", quote(str(input_data[k]), safe=""))
 
-    local_name = tool_name.split(".", 1)[-1] if "." in tool_name else tool_name
+    remaining = {k: v for k, v in input_data.items() if k not in path_params}
+    method = tool.openapi_method
+    props = (tool.input_schema or {}).get("properties", {})
+    query_params: dict[str, Any] = {}
+    body_params: dict[str, Any] = {}
+    for k, v in remaining.items():
+        loc = props.get(k, {}).get("x-param-in")
+        if loc == "body":
+            body_params[k] = v
+        elif loc in ("query", "header", "cookie"):
+            query_params[k] = v
+        else:
+            # no annotation — fall back to method-based (tools imported before this change)
+            if method in ("GET", "DELETE", "HEAD", "OPTIONS"):
+                query_params[k] = v
+            else:
+                body_params[k] = v
+    params = query_params or None
+    json_body = body_params if body_params else None
 
-    body: dict[str, Any] = {"tool": local_name, "input": input_data}
-    if auth_context is not None:
-        body["auth_context"] = auth_context
-        body["session_id"] = session_id
-    if tool.skill_context is not None:
-        body["skill_context"] = tool.skill_context
-    if agent_name:
-        body["agent_name"] = agent_name
-    if tool.skill_name:
-        body["skill_name"] = tool.skill_name
+    headers: dict[str, str] = {}
+    sec = tool.openapi_security
+    if sec and auth_context:
+        try:
+            if sec["type"] == "bearer":
+                headers["Authorization"] = f"Bearer {auth_context[sec['token_key']]}"
+            elif sec["type"] == "apiKey" and sec["in"] == "header":
+                headers[sec["name"]] = auth_context[sec["token_key"]]
+            elif sec["type"] == "apiKey" and sec["in"] == "query":
+                params = {**(params or {}), sec["name"]: auth_context[sec["token_key"]]}
+            elif sec["type"] == "apiKey" and sec["in"] == "cookie":
+                headers["Cookie"] = f"{sec['name']}={auth_context[sec['token_key']]}"
+            elif sec["type"] == "basic":
+                creds = base64.b64encode(
+                    f"{auth_context[sec['username_key']]}:{auth_context[sec['password_key']]}".encode()
+                ).decode()
+                headers["Authorization"] = f"Basic {creds}"
+            elif sec["type"] == "oauth2":
+                headers["Authorization"] = f"Bearer {await _get_oauth_token(sec, auth_context)}"
+            elif sec["type"] == "oidc":
+                headers["Authorization"] = f"Bearer {await _get_oidc_token(sec, auth_context)}"
+            else:
+                raise RuntimeError(f"unknown security type: {sec['type']!r}")
+        except KeyError as e:
+            raise RuntimeError(f"auth_context missing key {e} for tool {tool_name!r}") from e
 
-    resp = await _get_http_client().post(
-        execute_url,
-        json=body,
-        headers=_worker_service_headers(session_id, tool_name),
-        timeout=35,
+    resp = await _get_http_client().request(
+        method, url, params=params, json=json_body, headers=headers, timeout=35
     )
-
-    if resp.status_code == 404:
-        raise RuntimeError(f"tool_unavailable:{tool_name}")
-    resp.raise_for_status()
-    return resp.json()["output"]
+    if resp.status_code >= 500:
+        resp.raise_for_status()
+    if (
+        not resp.content
+        or resp.headers.get("content-type", "").split(";")[0].strip() != "application/json"
+    ):
+        return {"status": resp.status_code, "body": resp.text or None}
+    return resp.json()
 
 
 async def _emit_event(session_id: str, event: BaseEvent) -> None:
@@ -235,25 +295,30 @@ def _build_system_prompt(config: SessionConfig, llm_context: dict[str, Any] | No
     if config.tool_snapshot and config.use_monty:
         lines.append(
             "\nYou have access to one tool: `execute_python`. "
-            "You MUST use it to interact with all external capabilities. "
+            "The sandbox exposes ONLY the functions listed below as globals — nothing else exists. "
+            "There is NO internet, NO imports, NO urllib, NO requests, NO http, NO os, NO sys. "
+            "Do NOT try to import anything. Do NOT probe the environment. Do NOT check available modules. "
+            "JUST call the listed functions directly — they handle all networking and auth internally. "
             "ALWAYS write a SINGLE execute_python call that does everything — fetch all data, process it, and return the final answer. "
             "Never split work across multiple execute_python calls. "
-            "Write Python code and call the following functions (available as globals inside the sandbox):"
+            "Available functions (call these directly as globals):"
         )
         for tool_name, schema in config.tool_snapshot.items():
             fn = _safe_tool_name(tool_name)
             props = schema.input_schema.get("properties", {})
-            params = ", ".join(f"{k}=..." for k in props if k not in ToolInput.model_fields)
+            params = ", ".join(f"{k}=..." for k in props)
             out_schema = schema.output_schema or {}
             out_props = out_schema.get("properties", out_schema)
             out_info = json.dumps(out_props) if out_props else "dict"
             lines.append(f"- {fn}({params})  -> {out_info}  # {schema.description}")
         lines.append(
-            "\nIMPORTANT: These functions return Python dicts DIRECTLY — there is NO 'result' wrapper key. "
+            "\nIMPORTANT: Authentication (OAuth2, API keys, bearer tokens, basic auth) is handled AUTOMATICALLY "
+            "by the framework. Do NOT attempt to fetch tokens or set headers manually. Just call the function directly.\n"
+            "These functions return Python dicts DIRECTLY — there is NO 'result' wrapper key. "
             "Access fields directly, e.g.: `data = some_fn(x=1); value = data['field_name']`\n"
-            "Return a value from your code — the LAST EXPRESSION is the result. "
-            "Do NOT use print() to output results — print() returns None and the tool will return null. "
-            "Build a result variable and put it as the final line.\n"
+            "The LAST EXPRESSION in your code is the return value — it MUST be a variable or expression, NEVER a print() call. "
+            "print() returns None and will discard all results. "
+            "ALWAYS end your code with a bare variable name or expression: `result` not `print(result)`.\n"
             "ALWAYS include both `observation` (what you're doing) and `code` (the Python). "
             "Example: execute_python(observation='get Tokyo weather', code='result = get_weather(city=\"Tokyo\")\\nresult')"
         )

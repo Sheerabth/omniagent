@@ -1,21 +1,24 @@
-"""SSE streaming via Redis pub/sub fan-out."""
+"""SSE streaming via PostgreSQL LISTEN/NOTIFY."""
 
 import asyncio
 import json
 import logging
+import os
 import uuid
 from collections.abc import AsyncGenerator
 
+import psycopg
 from fastapi import APIRouter, Depends, HTTPException
 from sse_starlette.sse import EventSourceResponse
 
 from omniagent.control_plane.auth import require_any
 from omniagent.control_plane.db import get_conn
-from omniagent.control_plane.redis_client import get_redis
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["sse"])
+
+_CH = lambda sid: "session_" + str(sid).replace("-", "_")  # noqa: E731
 
 
 @router.get("/sessions/{session_id}/stream")
@@ -26,47 +29,37 @@ async def stream_session(session_id: uuid.UUID, _=Depends(require_any)) -> Event
     if not sess:
         raise HTTPException(404)
 
-    if sess["status"] in ("complete", "failed"):
-
-        async def immediate() -> AsyncGenerator[dict[str, str]]:
-            async with get_conn() as conn:
-                rows = await conn.execute(
-                    "SELECT messages FROM sessions WHERE id = %s", (session_id,)
-                )
-                s = await rows.fetchone()
-            messages = (s and s["messages"]) or []
-            last = next(
-                (m["content"] for m in reversed(messages) if m.get("role") == "assistant"), None
-            )
-            if sess["status"] == "complete":
-                yield {"data": json.dumps({"type": "complete", "result": last})}
-            else:
-                yield {"data": json.dumps({"type": "error", "reason": "session failed"})}
-
-        return EventSourceResponse(immediate())
-
     async def event_generator() -> AsyncGenerator[dict[str, str]]:
-        channel = f"session_{session_id}"
-        pubsub = get_redis().pubsub()
+        dsn = os.environ.get("DATABASE_URL", "")
         try:
-            await pubsub.subscribe(channel)
-            async for message in pubsub.listen():
-                if message["type"] != "message":
-                    continue
+            async with await psycopg.AsyncConnection.connect(dsn, autocommit=True) as pg:
+                # LISTEN before re-checking status to avoid race
+                await pg.execute(f"LISTEN {_CH(session_id)}")
+
+                async with get_conn() as conn:
+                    rows = await conn.execute(
+                        "SELECT status FROM sessions WHERE id = %s", (session_id,)
+                    )
+                    current = await rows.fetchone()
+
+                if current and current["status"] in ("complete", "failed"):
+                    ntype = "complete" if current["status"] == "complete" else "error"
+                    yield {"data": json.dumps({"type": ntype})}
+                    return
+
                 try:
-                    payload = json.loads(message["data"])
-                except Exception:
-                    continue
-                yield {"data": json.dumps(payload)}
-                if payload.get("type") in ("complete", "error"):
-                    break
+                    async with asyncio.timeout(300):
+                        async for notify in pg.notifies():
+                            ntype = notify.payload or "update"
+                            yield {"data": json.dumps({"type": ntype})}
+                            if ntype in ("complete", "error"):
+                                break
+                except TimeoutError:
+                    yield {"data": json.dumps({"type": "error", "reason": "session timeout"})}
         except asyncio.CancelledError:
             pass
         except Exception as e:
             logger.error("SSE error for session %s: %s", session_id, e)
             yield {"data": json.dumps({"type": "error", "reason": str(e)})}
-        finally:
-            await pubsub.unsubscribe(channel)
-            await pubsub.aclose()
 
     return EventSourceResponse(event_generator())

@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 
-from omniagent.control_plane import db, queue, redis_client
+from omniagent.control_plane import db, queue
 from omniagent.control_plane.routes import agents, internal, sessions, settings, skills, sse, tools
 
 logging.basicConfig(level=logging.INFO)
@@ -49,7 +49,7 @@ async def _mark_session_failed(session_id: str) -> None:
             "UPDATE sessions SET status='failed', updated_at=NOW() WHERE id=%s AND status='running'",
             (sid,),
         )
-    await internal._publish(sid, {"type": "error", "reason": "job failed or timed out"})
+    await internal._notify(sid, "error")
 
 
 async def _reconcile_stuck_sessions() -> None:
@@ -80,7 +80,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     dsn = os.environ.get("DATABASE_URL", "")
     await run_migrations(dsn)
     await db.init_pool()
-    await redis_client.init_redis()
     app.state.ui_api_key = await _seed_builtin_ui_key()
     await _reconcile_stuck_sessions()
     queue.set_session_fail_callback(_mark_session_failed)
@@ -88,7 +87,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     async with proc_app.open_async():
         yield
 
-    await redis_client.close_redis()
     await db.close_pool()
 
 

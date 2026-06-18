@@ -9,33 +9,25 @@ dependencies = [
     "uvicorn[standard]",
     "psycopg[binary]",
     "psycopg-pool",
-
     # job queue
     "procrastinate",
-
     # tool layer
     "pydantic",
     "pydantic-settings",
     "pydantic-monty",
-
     # agent harnesses
     "claude-agent-sdk",
     "google-antigravity",
     "mcp",
-
     # crypto
     "argon2-cffi",
-    "pyjwt",
-
-
+    # yaml spec import
+    "pyyaml",
     # worker HTTP client
     "httpx",
-
     # sse
     "sse-starlette",
-
     # pub/sub
-    "redis[asyncio]",
 ]
 
 [project.optional-dependencies]
