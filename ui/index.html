@@ -26,12 +26,19 @@
   .card { background: #1a1a1a; border: 1px solid #272727; border-radius: 8px; padding: 20px; }
   label { display: block; font-size: 12px; color: #888; margin-bottom: 4px; margin-top: 14px; }
   label:first-child { margin-top: 0; }
-  input[type=text], input[type=number], textarea, select {
+  input[type=text], input[type=number], input[type=password], textarea, select {
     width: 100%; background: #111; border: 1px solid #333; color: #e0e0e0;
     padding: 8px 10px; border-radius: 6px; font-size: 13px; font-family: inherit;
   }
   textarea { resize: vertical; min-height: 80px; }
   input:focus, textarea:focus, select:focus { outline: none; border-color: #4f7ef8; }
+  .auth-scheme-group { background: #161616; border: 1px solid #272727; border-radius: 6px; padding: 10px 12px; margin-bottom: 8px; }
+  .auth-scheme-group:last-child { margin-bottom: 0; }
+  .auth-scheme-header { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+  .auth-scheme-ns { font-size: 12px; font-weight: 600; color: #ccc; }
+  .auth-type-badge { font-size: 10px; color: #8ab4f8; background: #1e2040; border: 1px solid #2a3060; padding: 1px 6px; border-radius: 3px; }
+  .auth-scheme-group label { margin-top: 8px; margin-bottom: 2px; color: #666; font-size: 11px; }
+  .auth-scheme-group label:first-of-type { margin-top: 0; }
   .checkbox-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 6px; margin-top: 4px; }
   .checkbox-grid label { margin: 0; display: flex; align-items: center; gap: 6px; font-size: 12px; color: #ccc;
     background: #111; border: 1px solid #2a2a2a; padding: 4px 8px; border-radius: 4px; cursor: pointer;
@@ -249,7 +256,11 @@
         Enable Monty (Python sandbox with tool access)
       </label>
       <label>Auth Context</label>
-      <textarea id="agent-auth-context" placeholder='{"service_account_token": "...", "org_id": "..."}'></textarea>
+      <div id="agent-auth-fields"></div>
+      <details id="agent-auth-raw-wrap" style="margin-top:4px">
+        <summary style="cursor:pointer;color:#666;font-size:12px;user-select:none">Raw JSON override</summary>
+        <textarea id="agent-auth-context" placeholder='{"extra_key": "value"}' style="margin-top:6px"></textarea>
+      </details>
       <label>Skills</label>
       <div id="agent-skills-checkboxes" class="checkbox-grid"></div>
       <div class="btn-row">
@@ -300,10 +311,34 @@
     <div id="api-keys-list"><p class="empty">Loading…</p></div>
   </div>
   <div class="form-col">
+    <div id="api-key-form" class="card" style="display:none">
+      <h2>New API Key</h2>
+      <label>Name</label>
+      <input type="text" id="akf-name" placeholder="e.g. my-chat-app">
+      <label style="margin-top:14px">Scopes</label>
+      <div style="margin-top:6px;display:flex;flex-direction:column;gap:4px" id="akf-scopes">
+        <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:#ccc;cursor:pointer"><input type="checkbox" value="admin" checked style="width:auto"> <span><b>admin</b> — full access</span></label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:#888;cursor:pointer"><input type="checkbox" value="sessions:write" style="width:auto"> sessions:write — create &amp; run sessions</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:#888;cursor:pointer"><input type="checkbox" value="sessions:read" style="width:auto"> sessions:read — read session status &amp; history</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:#888;cursor:pointer"><input type="checkbox" value="agents:read" style="width:auto"> agents:read — list agents</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:#888;cursor:pointer"><input type="checkbox" value="agents:write" style="width:auto"> agents:write — create &amp; delete agents</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:#888;cursor:pointer"><input type="checkbox" value="tools:read" style="width:auto"> tools:read — list tools</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:#888;cursor:pointer"><input type="checkbox" value="tools:write" style="width:auto"> tools:write — import &amp; delete tools</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:#888;cursor:pointer"><input type="checkbox" value="skills:read" style="width:auto"> skills:read — list skills</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:#888;cursor:pointer"><input type="checkbox" value="skills:write" style="width:auto"> skills:write — create &amp; delete skills</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:#888;cursor:pointer"><input type="checkbox" value="keys:manage" style="width:auto"> keys:manage — create &amp; delete API keys</label>
+      </div>
+      <div class="btn-row">
+        <button class="btn-primary" onclick="submitNewApiKey()">Create</button>
+        <button class="btn-ghost" onclick="document.getElementById('api-key-form').style.display='none'">Cancel</button>
+      </div>
+    </div>
     <div id="api-key-detail" class="card" style="display:none">
       <h2 id="skd-title"></h2>
       <label>Name</label>
       <p id="skd-name" style="font-size:13px;color:#ccc"></p>
+      <label>Scopes</label>
+      <p id="skd-scopes" style="font-size:12px;color:#8ab4f8;font-family:monospace"></p>
       <label>Created</label>
       <p id="skd-created" style="font-size:13px;color:#ccc"></p>
       <div id="skd-new-key" style="display:none; margin-top:16px; padding:12px; background:#0a1a0a; border:1px solid #2a5c2a; border-radius:8px">
@@ -401,26 +436,41 @@ function renderApiKeys() {
 }
 
 function newApiKey() {
-  const name = prompt('Key name:');
-  if (!name) return;
-  api('POST', '/settings/api-keys', { name }).then(r => {
-    allApiKeys.push({id: r.id, name: r.name, created_at: r.created_at});
+  document.getElementById('akf-name').value = '';
+  document.querySelectorAll('#akf-scopes input[type=checkbox]').forEach((cb, i) => { cb.checked = i === 0; });
+  document.getElementById('api-key-detail').style.display = 'none';
+  document.getElementById('api-key-form').style.display = 'block';
+}
+
+async function submitNewApiKey() {
+  const name = document.getElementById('akf-name').value.trim();
+  if (!name) { toast('Name required', false); return; }
+  const scopes = [...document.querySelectorAll('#akf-scopes input[type=checkbox]:checked')].map(x => x.value);
+  if (!scopes.length) { toast('Select at least one scope', false); return; }
+  try {
+    const r = await api('POST', '/settings/api-keys', { name, scopes });
+    allApiKeys.push({id: r.id, name: r.name, scopes: r.scopes, created_at: r.created_at});
+    document.getElementById('api-key-form').style.display = 'none';
     document.getElementById('skd-title').textContent = 'API Key';
     document.getElementById('skd-name').textContent = r.name;
     document.getElementById('skd-created').textContent = new Date(r.created_at).toLocaleString();
     document.getElementById('skd-new-key').style.display = 'block';
+    document.getElementById('skd-no-key').style.display = 'none';
     document.getElementById('skd-key').textContent = r.key;
+    document.getElementById('skd-delete-btn').dataset.keyId = r.id;
     document.getElementById('api-key-detail').style.display = 'block';
     renderApiKeys();
-    toast('Key created');
-  }).catch(e => toast(e.message, false));
+    toast('Key created — copy it now');
+  } catch(e) { toast(e.message, false); }
 }
 
 function showApiKey(id) {
   const k = allApiKeys.find(x => x.id === id);
   if (!k) return;
+  document.getElementById('api-key-form').style.display = 'none';
   document.getElementById('skd-title').textContent = 'API Key';
   document.getElementById('skd-name').textContent = k.name;
+  document.getElementById('skd-scopes').textContent = (k.scopes || ['admin']).join(', ');
   document.getElementById('skd-created').textContent = new Date(k.created_at).toLocaleString();
   document.getElementById('skd-new-key').style.display = 'none';
   document.getElementById('skd-no-key').style.display = 'block';
@@ -439,7 +489,7 @@ async function rotateApiKey() {
   try {
     // Delete old, create new with same name
     await api('DELETE', '/settings/api-keys/' + id);
-    const r = await api('POST', '/settings/api-keys', { name: k.name });
+    const r = await api('POST', '/settings/api-keys', { name: k.name, scopes: k.scopes || ['admin'] });
     document.getElementById('skd-no-key').style.display = 'none';
     document.getElementById('skd-new-key').style.display = 'block';
     document.getElementById('skd-key').textContent = r.key;
@@ -715,6 +765,7 @@ function newAgent() {
   document.getElementById('agent-system').value = '';
   document.getElementById('agent-monty').checked = false;
   document.getElementById('agent-auth-context').value = '';
+  renderAuthFields({}, null);
   updateModelOptions();
   document.getElementById('agent-delete-btn').style.display = 'none';
   document.getElementById('agent-oauth2-connections').style.display = 'none';
@@ -731,7 +782,8 @@ function editAgent(name, version) {
   updateModelOptions(a.model || '');
   document.getElementById('agent-system').value = a.system_prompt || '';
   document.getElementById('agent-monty').checked = !!a.use_monty;
-  document.getElementById('agent-auth-context').value = a.auth_context ? JSON.stringify(a.auth_context, null, 2) : '';
+  document.getElementById('agent-auth-context').value = '';
+  renderAuthFields(a.skill_refs || {}, null, a.auth_context_keys || []);
   document.getElementById('agent-delete-btn').style.display = 'inline-block';
   renderSkillCheckboxes(a.skill_refs || {});
   renderOauth2Connections(a);
@@ -740,6 +792,80 @@ function editAgent(name, version) {
 
 function closeAgentForm() {
   document.getElementById('agent-form').style.display = 'none';
+}
+
+function renderAuthFields(skillRefs, existingAuth, authContextKeys = []) {
+  const configuredKeys = new Set(authContextKeys);
+  const skillNames = Object.keys(skillRefs || {});
+  const toolNames = new Set(
+    allSkills.filter(s => skillNames.includes(s.name)).flatMap(s => s.tool_names || [])
+  );
+  const secTools = allTools.filter(t => toolNames.has(t.name) && t.openapi_security);
+  const container = document.getElementById('agent-auth-fields');
+  const seen = new Set();
+  const groups = [];
+  secTools.forEach(t => {
+    const sec = t.openapi_security;
+    const type = sec.type;
+    const pk = type === 'basic' ? sec.username_key
+              : (type === 'bearer' || type === 'apiKey') ? sec.token_key
+              : sec.client_id_key;
+    if (!pk || seen.has(pk)) return;
+    seen.add(pk);
+    const ns = t.namespace || t.name;
+    const v = k => escHtml(existingAuth?.[k] || '');
+    const configured = k => configuredKeys.has(k);
+    const ph = k => configured(k) ? 'leave blank to keep existing' : '';
+    const badge = type === 'bearer' ? 'Bearer'
+                : type === 'apiKey' ? `API Key · ${sec.in}`
+                : type === 'basic'  ? 'Basic Auth'
+                : type === 'oauth2' ? (sec.authorization_url ? 'OAuth2 Auth Code' : 'OAuth2 Client Credentials')
+                : type === 'oidc'   ? 'OIDC'
+                : type;
+    const dot = k => configured(k) ? '<span style="color:#6fcf6f;margin-left:4px" title="Configured">●</span>' : '';
+    let fields = '';
+    if (type === 'bearer') {
+      fields = `<label>Token${dot(sec.token_key)}<input type="password" data-auth-key="${escHtml(sec.token_key)}" value="${v(sec.token_key)}" placeholder="${ph(sec.token_key)}" autocomplete="new-password"></label>`;
+    } else if (type === 'apiKey') {
+      fields = `<label>${escHtml(sec.name)}${dot(sec.token_key)}<input type="password" data-auth-key="${escHtml(sec.token_key)}" value="${v(sec.token_key)}" placeholder="${ph(sec.token_key)}" autocomplete="new-password"></label>`;
+    } else if (type === 'basic') {
+      seen.add(sec.password_key);
+      fields = `<label>Username${dot(sec.username_key)}<input type="text" data-auth-key="${escHtml(sec.username_key)}" value="${v(sec.username_key)}" placeholder="${ph(sec.username_key)}" autocomplete="off"></label>
+                <label>Password${dot(sec.password_key)}<input type="password" data-auth-key="${escHtml(sec.password_key)}" value="${v(sec.password_key)}" placeholder="${ph(sec.password_key)}" autocomplete="new-password"></label>`;
+    } else if (type === 'oauth2' || type === 'oidc') {
+      seen.add(sec.client_secret_key);
+      fields = `<label>Client ID${dot(sec.client_id_key)}<input type="text" data-auth-key="${escHtml(sec.client_id_key)}" value="${v(sec.client_id_key)}" placeholder="${ph(sec.client_id_key)}" autocomplete="off"></label>
+                <label>Client Secret${dot(sec.client_secret_key)}<input type="password" data-auth-key="${escHtml(sec.client_secret_key)}" value="${v(sec.client_secret_key)}" placeholder="${ph(sec.client_secret_key)}" autocomplete="new-password"></label>`;
+    }
+    groups.push(`<div class="auth-scheme-group">
+      <div class="auth-scheme-header"><span class="auth-scheme-ns">${escHtml(ns)}</span><span class="auth-type-badge">${escHtml(badge)}</span></div>
+      ${fields}
+    </div>`);
+  });
+  container.innerHTML = groups.join('');
+  return seen;
+}
+
+function buildAuthContext() {
+  const result = {};
+  const raw = document.getElementById('agent-auth-context').value.trim();
+  if (raw) {
+    try { Object.assign(result, JSON.parse(raw)); } catch(e) { throw new Error('auth_context: invalid JSON'); }
+  }
+  document.querySelectorAll('#agent-auth-fields [data-auth-key]').forEach(el => {
+    if (el.value.trim()) result[el.dataset.authKey] = el.value.trim();
+  });
+  return Object.keys(result).length ? result : null;
+}
+
+function onSkillsChanged() {
+  // Collect current typed values before re-render
+  const current = {};
+  document.querySelectorAll('#agent-auth-fields [data-auth-key]').forEach(el => {
+    if (el.value.trim()) current[el.dataset.authKey] = el.value.trim();
+  });
+  renderAuthFields(getCheckedSkillRefs(), current);
+  renderOauth2Connections({ skill_refs: getCheckedSkillRefs(), name: document.getElementById('agent-name').value, version: document.getElementById('agent-version').value });
 }
 
 function renderOauth2Connections(agent) {
@@ -773,7 +899,7 @@ function renderSkillCheckboxes(selectedRefs) {
   if (!allSkills.length) { el.innerHTML = '<span style="color:#555;font-size:12px">No skills yet</span>'; return; }
   el.innerHTML = allSkills.map(s => `
     <label>
-      <input type="checkbox" data-skill-name="${escHtml(s.name)}" data-skill-version="${escHtml(s.version)}" ${selectedRefs[s.name] === s.version ? 'checked' : ''}>
+      <input type="checkbox" data-skill-name="${escHtml(s.name)}" data-skill-version="${escHtml(s.version)}" ${selectedRefs[s.name] === s.version ? 'checked' : ''} onchange="onSkillsChanged()">
       ${escHtml(s.name)}<span style="color:#555;font-size:10px"> ${escHtml(s.version)}</span>
     </label>`).join('');
 }
@@ -795,11 +921,7 @@ async function saveAgent() {
     system_prompt: document.getElementById('agent-system').value.trim(),
     use_monty: document.getElementById('agent-monty').checked,
     skill_refs: getCheckedSkillRefs(),
-    auth_context: (() => {
-      const raw = document.getElementById('agent-auth-context').value.trim();
-      if (!raw) return null;
-      try { return JSON.parse(raw); } catch (e) { throw new Error('auth_context: invalid JSON'); }
-    })(),
+    auth_context: buildAuthContext(),
   };
   if (!body.name) { toast('Name required', false); return; }
   try {

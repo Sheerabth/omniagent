@@ -686,6 +686,7 @@ source = { editable = "." }
 dependencies = [
     { name = "argon2-cffi" },
     { name = "claude-agent-sdk" },
+    { name = "cryptography" },
     { name = "fastapi" },
     { name = "google-antigravity" },
     { name = "httpx" },
@@ -722,6 +723,7 @@ dev = [
 requires-dist = [
     { name = "argon2-cffi" },
     { name = "claude-agent-sdk" },
+    { name = "cryptography" },
     { name = "fastapi" },
     { name = "google-antigravity" },
     { name = "httpx" },

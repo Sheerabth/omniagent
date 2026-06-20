@@ -9,6 +9,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
+from omniagent.control_plane.crypto import decrypt_auth_context, encrypt_auth_context
 from omniagent.control_plane.db import get_conn
 
 router = APIRouter(prefix="/oauth2", tags=["oauth2"])
@@ -30,7 +31,7 @@ async def oauth2_connect(
         ).fetchone()
         if not row:
             raise HTTPException(404, "Agent not found")
-        auth_ctx: dict = row["auth_context"] or {}
+        auth_ctx: dict = decrypt_auth_context(row["auth_context"]) or {}
 
         row = await (
             await conn.execute("SELECT openapi_security FROM tools WHERE name=%s", (tool_name,))
@@ -135,7 +136,7 @@ async def oauth2_callback(code: str, state: str) -> RedirectResponse:
     async with get_conn() as conn:
         await conn.execute(
             "UPDATE agents SET auth_context=%s, updated_at=NOW() WHERE name=%s AND version=%s",
-            (json.dumps(new_ctx), entry["agent_id"], entry["agent_version"]),
+            (encrypt_auth_context(new_ctx), entry["agent_id"], entry["agent_version"]),
         )
 
     return RedirectResponse("/?oauth2=success")

@@ -6,7 +6,8 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 
-from omniagent.control_plane.auth import require_any
+from omniagent.control_plane.auth import require_scope
+from omniagent.control_plane.crypto import encrypt_auth_context
 from omniagent.control_plane.db import get_conn
 from omniagent.control_plane.models import (
     MessageRecord,
@@ -22,7 +23,9 @@ MAX_HISTORY_TURNS = int(os.environ.get("MAX_HISTORY_TURNS", "50"))
 
 
 @router.post("", response_model=SessionRecord, status_code=201)
-async def create_session(body: SessionCreate, _=Depends(require_any)) -> SessionRecord:
+async def create_session(
+    body: SessionCreate, _=Depends(require_scope("sessions:write"))
+) -> SessionRecord:
     async with get_conn() as conn:
         if body.agent_version:
             rows = await conn.execute(
@@ -53,7 +56,7 @@ async def create_session(body: SessionCreate, _=Depends(require_any)) -> Session
 
 @router.post("/{session_id}/run", status_code=202)
 async def run_session(
-    session_id: uuid.UUID, body: RunRequest, _=Depends(require_any)
+    session_id: uuid.UUID, body: RunRequest, _=Depends(require_scope("sessions:write"))
 ) -> JSONResponse:
     async with get_conn() as conn:
         rows = await conn.execute("SELECT * FROM sessions WHERE id = %s", (session_id,))
@@ -93,7 +96,7 @@ async def run_session(
             payload=json.dumps(
                 {
                     "history": messages,
-                    "auth_context": body.auth_context,
+                    "auth_context": encrypt_auth_context(body.auth_context),
                     "llm_context": body.llm_context,
                 },
                 default=str,
@@ -104,20 +107,22 @@ async def run_session(
 
 
 @router.get("", response_model=list[SessionRecord])
-async def list_sessions(_=Depends(require_any)) -> list[SessionRecord]:
+async def list_sessions(_=Depends(require_scope("sessions:read"))) -> list[SessionRecord]:
     async with get_conn() as conn:
         rows = await conn.execute("SELECT * FROM sessions ORDER BY created_at DESC LIMIT 100")
         return [SessionRecord.model_validate(dict(r)) for r in await rows.fetchall()]
 
 
 @router.delete("/{session_id}", status_code=204)
-async def delete_session(session_id: uuid.UUID, _=Depends(require_any)) -> None:
+async def delete_session(session_id: uuid.UUID, _=Depends(require_scope("sessions:write"))) -> None:
     async with get_conn() as conn:
         await conn.execute("DELETE FROM sessions WHERE id = %s", (session_id,))
 
 
 @router.get("/{session_id}/status", response_model=SessionStatus)
-async def get_session_status(session_id: uuid.UUID, _=Depends(require_any)) -> SessionStatus:
+async def get_session_status(
+    session_id: uuid.UUID, _=Depends(require_scope("sessions:read"))
+) -> SessionStatus:
     async with get_conn() as conn:
         rows = await conn.execute("SELECT * FROM sessions WHERE id = %s", (session_id,))
         session = await rows.fetchone()

@@ -4,7 +4,7 @@ import yaml
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from omniagent.control_plane.auth import require_any
+from omniagent.control_plane.auth import require_scope
 from omniagent.control_plane.db import get_conn
 from omniagent.control_plane.models import ToolRecord
 from omniagent.control_plane.openapi import parse_spec
@@ -19,7 +19,9 @@ class ImportOpenAPIRequest(BaseModel):
 
 
 @router.post("/import-openapi", status_code=201)
-async def import_openapi(body: ImportOpenAPIRequest, _=Depends(require_any)) -> dict:
+async def import_openapi(
+    body: ImportOpenAPIRequest, _=Depends(require_scope("tools:write"))
+) -> dict:
     import json
 
     spec = body.spec
@@ -78,7 +80,9 @@ class PatchToolRequest(BaseModel):
 
 
 @router.patch("/{name}", status_code=200)
-async def patch_tool(name: str, body: PatchToolRequest, _=Depends(require_any)) -> dict:
+async def patch_tool(
+    name: str, body: PatchToolRequest, _=Depends(require_scope("tools:write"))
+) -> dict:
     async with get_conn() as conn:
         result = await conn.execute(
             "UPDATE tools SET timeout = %s, updated_at = NOW() WHERE name = %s",
@@ -90,7 +94,7 @@ async def patch_tool(name: str, body: PatchToolRequest, _=Depends(require_any)) 
 
 
 @router.delete("/{name}", status_code=204)
-async def delete_tool(name: str, _=Depends(require_any)) -> None:
+async def delete_tool(name: str, _=Depends(require_scope("tools:write"))) -> None:
     async with get_conn() as conn:
         result = await conn.execute("DELETE FROM tools WHERE name = %s", (name,))
         if result.rowcount == 0:
@@ -98,20 +102,22 @@ async def delete_tool(name: str, _=Depends(require_any)) -> None:
 
 
 @router.delete("/namespace/{namespace}", status_code=204)
-async def delete_namespace(namespace: str, _=Depends(require_any)) -> None:
+async def delete_namespace(namespace: str, _=Depends(require_scope("tools:write"))) -> None:
     async with get_conn() as conn:
         await conn.execute("DELETE FROM tools WHERE namespace = %s", (namespace,))
 
 
 @router.get("", response_model=list[ToolRecord])
-async def list_tools(_=Depends(require_any)) -> list[ToolRecord]:
+async def list_tools(_=Depends(require_scope("tools:read"))) -> list[ToolRecord]:
     async with get_conn() as conn:
         rows = await conn.execute("SELECT * FROM tools ORDER BY name")
         return [ToolRecord.model_validate(dict(r)) for r in await rows.fetchall()]
 
 
 @router.get("/{namespace}", response_model=list[ToolRecord])
-async def list_tools_by_namespace(namespace: str, _=Depends(require_any)) -> list[ToolRecord]:
+async def list_tools_by_namespace(
+    namespace: str, _=Depends(require_scope("tools:read"))
+) -> list[ToolRecord]:
     async with get_conn() as conn:
         rows = await conn.execute(
             "SELECT * FROM tools WHERE namespace = %s ORDER BY name",

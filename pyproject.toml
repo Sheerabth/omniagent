@@ -21,6 +21,7 @@ dependencies = [
     "mcp",
     # crypto
     "argon2-cffi",
+    "cryptography",
     # yaml spec import
     "pyyaml",
     # worker HTTP client

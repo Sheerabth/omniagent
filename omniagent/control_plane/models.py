@@ -71,7 +71,7 @@ class AgentRecord(BaseModel):
     skill_refs: dict[str, str]
     system_prompt: str
     use_monty: bool
-    auth_context: Any = None
+    auth_context_keys: list[str] = []
     created_at: datetime
     updated_at: datetime
 
@@ -129,19 +129,36 @@ class SessionStatus(BaseModel):
 # ── Settings ───────────────────────────────────────────────────────────────
 
 
+VALID_SCOPES = {
+    "admin",
+    "tools:read",
+    "tools:write",
+    "skills:read",
+    "skills:write",
+    "agents:read",
+    "agents:write",
+    "sessions:read",
+    "sessions:write",
+    "keys:manage",
+}
+
+
 class ApiKeyCreate(BaseModel):
     name: str
+    scopes: list[str] = ["admin"]
 
 
 class ApiKeyRecord(BaseModel):
     id: uuid.UUID
     name: str
+    scopes: list[str]
     created_at: datetime
 
 
 class ApiKeyResponse(BaseModel):
     id: uuid.UUID
     name: str
+    scopes: list[str]
     created_at: datetime
     key: str
 

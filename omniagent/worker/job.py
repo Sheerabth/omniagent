@@ -14,6 +14,7 @@ import httpx
 import procrastinate
 from procrastinate import PsycopgConnector
 
+from omniagent.control_plane.crypto import decrypt_auth_context
 from omniagent.control_plane.models import MessageRecord
 from omniagent.worker.models import (
     BaseEvent,
@@ -119,7 +120,7 @@ async def _fetch_session_config(session_id: str) -> SessionConfig:
         model=agent["model"],
         system_prompt=agent["system_prompt"],
         use_monty=agent["use_monty"],
-        auth_context=agent.get("auth_context"),
+        auth_context=decrypt_auth_context(agent.get("auth_context")),
         skills=skills,
         tool_snapshot=tool_snapshot,
     )
@@ -182,7 +183,7 @@ async def _get_oauth_token(security: dict, auth_context: dict) -> str:
     resp.raise_for_status()
     data = resp.json()
     if "access_token" not in data:
-        raise RuntimeError(f"Token response missing access_token: {data}")
+        raise RuntimeError(f"Token response missing access_token (got keys: {list(data.keys())})")
     token = data["access_token"]
     expires_in = data.get("expires_in", 3600)
 
@@ -374,7 +375,7 @@ def _build_system_prompt(config: SessionConfig, llm_context: dict[str, Any] | No
 async def run_agent_job(session_id: str, payload: str) -> None:
     data = json.loads(payload)
     history = [MessageRecord.model_validate(m) for m in data.get("history", [])]
-    runtime_auth_context: Any = data.get("auth_context")
+    runtime_auth_context: Any = decrypt_auth_context(data.get("auth_context"))
     runtime_llm_context: Any = data.get("llm_context")
 
     config = await _fetch_session_config(session_id)

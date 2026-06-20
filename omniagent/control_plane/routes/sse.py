@@ -11,7 +11,7 @@ import psycopg
 from fastapi import APIRouter, Depends, HTTPException
 from sse_starlette.sse import EventSourceResponse
 
-from omniagent.control_plane.auth import require_any
+from omniagent.control_plane.auth import require_scope
 from omniagent.control_plane.db import get_conn
 
 logger = logging.getLogger(__name__)
@@ -22,7 +22,9 @@ _CH = lambda sid: "session_" + str(sid).replace("-", "_")  # noqa: E731
 
 
 @router.get("/sessions/{session_id}/stream")
-async def stream_session(session_id: uuid.UUID, _=Depends(require_any)) -> EventSourceResponse:
+async def stream_session(
+    session_id: uuid.UUID, _=Depends(require_scope("sessions:read"))
+) -> EventSourceResponse:
     async with get_conn() as conn:
         rows = await conn.execute("SELECT status FROM sessions WHERE id = %s", (session_id,))
         sess = await rows.fetchone()

@@ -3,7 +3,7 @@ import json
 import psycopg
 from fastapi import APIRouter, Depends, HTTPException
 
-from omniagent.control_plane.auth import require_any
+from omniagent.control_plane.auth import require_scope
 from omniagent.control_plane.db import get_conn
 from omniagent.control_plane.models import SkillCreate, SkillRecord
 
@@ -21,7 +21,7 @@ async def _validate_tool_names(conn: psycopg.AsyncConnection, tool_names: list[s
 
 
 @router.post("", response_model=SkillRecord, status_code=201)
-async def create_skill(body: SkillCreate, _=Depends(require_any)) -> SkillRecord:
+async def create_skill(body: SkillCreate, _=Depends(require_scope("skills:write"))) -> SkillRecord:
     async with get_conn() as conn:
         await _validate_tool_names(conn, body.tool_names)
         rows = await conn.execute(
@@ -49,14 +49,16 @@ async def create_skill(body: SkillCreate, _=Depends(require_any)) -> SkillRecord
 
 
 @router.get("", response_model=list[SkillRecord])
-async def list_skills(_=Depends(require_any)) -> list[SkillRecord]:
+async def list_skills(_=Depends(require_scope("skills:read"))) -> list[SkillRecord]:
     async with get_conn() as conn:
         rows = await conn.execute("SELECT * FROM skills ORDER BY name, created_at")
         return [SkillRecord.model_validate(dict(r)) for r in await rows.fetchall()]
 
 
 @router.get("/{name}", response_model=list[SkillRecord])
-async def list_skill_versions(name: str, _=Depends(require_any)) -> list[SkillRecord]:
+async def list_skill_versions(
+    name: str, _=Depends(require_scope("skills:read"))
+) -> list[SkillRecord]:
     async with get_conn() as conn:
         rows = await conn.execute(
             "SELECT * FROM skills WHERE name = %s ORDER BY created_at", (name,)
@@ -68,7 +70,9 @@ async def list_skill_versions(name: str, _=Depends(require_any)) -> list[SkillRe
 
 
 @router.get("/{name}/{version}", response_model=SkillRecord)
-async def get_skill(name: str, version: str, _=Depends(require_any)) -> SkillRecord:
+async def get_skill(
+    name: str, version: str, _=Depends(require_scope("skills:read"))
+) -> SkillRecord:
     async with get_conn() as conn:
         rows = await conn.execute(
             "SELECT * FROM skills WHERE name = %s AND version = %s", (name, version)
@@ -80,6 +84,6 @@ async def get_skill(name: str, version: str, _=Depends(require_any)) -> SkillRec
 
 
 @router.delete("/{name}/{version}", status_code=204)
-async def delete_skill(name: str, version: str, _=Depends(require_any)) -> None:
+async def delete_skill(name: str, version: str, _=Depends(require_scope("skills:write"))) -> None:
     async with get_conn() as conn:
         await conn.execute("DELETE FROM skills WHERE name = %s AND version = %s", (name, version))
