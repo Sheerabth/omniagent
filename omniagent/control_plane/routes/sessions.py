@@ -11,6 +11,7 @@ from omniagent.control_plane.crypto import encrypt_auth_context
 from omniagent.control_plane.db import get_conn
 from omniagent.control_plane.models import (
     MessageRecord,
+    ResumeRequest,
     RunRequest,
     SessionCreate,
     SessionRecord,
@@ -106,10 +107,62 @@ async def run_session(
     return JSONResponse({"session_id": str(session_id)}, status_code=202)
 
 
+@router.post("/{session_id}/resume", status_code=202)
+async def resume_session(
+    session_id: uuid.UUID, body: ResumeRequest, _=Depends(require_scope("sessions:write"))
+) -> JSONResponse:
+    """Inject a tool result into a deferred session and schedule the next turn."""
+    async with get_conn() as conn:
+        rows = await conn.execute("SELECT * FROM sessions WHERE id = %s", (session_id,))
+        session = await rows.fetchone()
+        if not session:
+            raise HTTPException(404)
+        if session["status"] != "deferred":
+            raise HTTPException(409, detail="Session is not deferred")
+
+        messages = session["messages"] or []
+        resume_text = f"[RESUME: {body.message}]" if body.message else "[RESUME: Turn resumed.]"
+        messages.append(
+            MessageRecord(
+                role="user",
+                content=resume_text,
+                timestamp=datetime.now(UTC).isoformat(),
+            ).model_dump()
+        )
+
+        deferred_raw = session["deferred_payload"] or "{}"
+        deferred_data = json.loads(deferred_raw)
+
+        rows = await conn.execute(
+            """UPDATE sessions SET status='running', messages=%s, updated_at=NOW()
+               WHERE id=%s AND status='deferred' RETURNING id""",
+            (json.dumps(messages), session_id),
+        )
+        if not await rows.fetchone():
+            raise HTTPException(409, detail="Session is not deferred")
+
+        from omniagent.worker.job import run_agent_job
+
+        await run_agent_job.configure(queue="default").defer_async(
+            session_id=str(session_id),
+            payload=json.dumps(
+                {
+                    "history": messages,
+                    "auth_context": deferred_data.get("auth_context"),
+                    "llm_context": deferred_data.get("llm_context"),
+                }
+            ),
+        )
+
+    return JSONResponse({"session_id": str(session_id)}, status_code=202)
+
+
 @router.get("", response_model=list[SessionRecord])
 async def list_sessions(_=Depends(require_scope("sessions:read"))) -> list[SessionRecord]:
     async with get_conn() as conn:
-        rows = await conn.execute("SELECT * FROM sessions ORDER BY created_at DESC LIMIT 100")
+        rows = await conn.execute(
+            "SELECT * FROM sessions WHERE is_scheduled = FALSE ORDER BY created_at DESC LIMIT 100"
+        )
         return [SessionRecord.model_validate(dict(r)) for r in await rows.fetchall()]
 
 

@@ -1,0 +1,83 @@
+"""Procrastinate periodic task: fire due schedules every minute."""
+
+import json
+import logging
+from datetime import UTC, datetime
+
+from omniagent.worker.job import app
+
+logger = logging.getLogger(__name__)
+
+
+@app.periodic(cron="* * * * *")
+@app.task(name="check_schedules", queue="default")
+async def check_schedules(timestamp: int) -> None:
+    from croniter import croniter
+
+    from omniagent.control_plane.db import get_conn
+
+    async with get_conn() as conn:
+        rows = await conn.execute(
+            "SELECT * FROM schedules WHERE enabled = TRUE AND (next_run_at IS NULL OR next_run_at <= NOW())"
+        )
+        schedules = await rows.fetchall()
+
+    for sched in schedules:
+        try:
+            await _fire_schedule(sched)
+
+            # Compute next_run_at from cron expression
+            c = croniter(sched["cron_expr"])
+            next_run = datetime.fromtimestamp(c.get_next(float), tz=UTC)
+
+            async with get_conn() as conn:
+                await conn.execute(
+                    "UPDATE schedules SET last_run_at=NOW(), next_run_at=%s, updated_at=NOW() WHERE id=%s",
+                    (next_run, sched["id"]),
+                )
+            logger.info("schedule %s fired, next=%s", sched["id"], next_run.isoformat())
+        except Exception:
+            logger.exception("schedule %s: fire failed", sched["id"])
+
+
+async def _fire_schedule(sched: dict) -> None:
+    from omniagent.control_plane.db import get_conn
+
+    async with get_conn() as conn:
+        rows = await conn.execute(
+            "SELECT name, version, skill_refs FROM agents WHERE name = %s ORDER BY created_at DESC LIMIT 1",
+            (sched["agent_name"],),
+        )
+        agent = await rows.fetchone()
+        if not agent:
+            raise RuntimeError(f"agent not found: {sched['agent_name']}")
+
+        now = datetime.now(UTC).isoformat()
+        messages = [{"role": "user", "content": sched["prompt"], "timestamp": now}]
+
+        rows = await conn.execute(
+            """INSERT INTO sessions (agent_name, agent_version, skill_versions, status, messages, schedule_id, is_scheduled)
+               VALUES (%s, %s, %s, 'running', %s, %s, TRUE) RETURNING id""",
+            (
+                agent["name"],
+                agent["version"],
+                json.dumps(agent["skill_refs"] or {}),
+                json.dumps(messages),
+                sched["id"],
+            ),
+        )
+        session_id = str((await rows.fetchone())["id"])
+
+    from omniagent.worker.job import run_agent_job
+
+    await run_agent_job.configure(queue="default").defer_async(
+        session_id=session_id,
+        payload=json.dumps(
+            {
+                "history": messages,
+                "auth_context": sched["auth_context"],  # already encrypted
+                "llm_context": sched["llm_context"],
+            }
+        ),
+    )
+    logger.info("schedule %s: created session %s", sched["id"], session_id)

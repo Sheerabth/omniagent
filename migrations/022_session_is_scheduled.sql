@@ -1,0 +1,2 @@
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS is_scheduled BOOLEAN NOT NULL DEFAULT FALSE;
+UPDATE sessions SET is_scheduled = TRUE WHERE schedule_id IS NOT NULL;

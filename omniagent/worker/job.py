@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import time
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import quote
 
@@ -26,6 +27,7 @@ from omniagent.worker.models import (
     ToolResultEvent,
     ToolSnapshot,
 )
+from omniagent.worker.native import NATIVE_TOOL_DESCRIPTIONS, NATIVE_TOOL_SCHEMAS, DeferInfo
 
 logger = logging.getLogger(__name__)
 
@@ -305,7 +307,11 @@ def _safe_tool_name(name: str) -> str:
     return name.replace(".", "__").replace("-", "_")
 
 
-def _build_system_prompt(config: SessionConfig, llm_context: dict[str, Any] | None = None) -> str:
+def _build_system_prompt(
+    config: SessionConfig,
+    llm_context: dict[str, Any] | None = None,
+    extra_tools: dict[str, ToolSnapshot] | None = None,
+) -> str:
     lines = [config.system_prompt]
     if llm_context:
         lines.append(f"\nUser context: {json.dumps(llm_context, default=str)}")
@@ -316,10 +322,12 @@ def _build_system_prompt(config: SessionConfig, llm_context: dict[str, Any] | No
         if skill.instructions:
             lines.append(skill.instructions)
 
-    if config.tool_snapshot and not config.use_monty:
+    effective_snapshot = {**config.tool_snapshot, **(extra_tools or {})}
+
+    if effective_snapshot and not config.use_monty:
         # Group tools by skill for clearer LLM context.
         by_skill: dict[str, list[tuple[str, ToolSnapshot]]] = {}
-        for tool_name, schema in config.tool_snapshot.items():
+        for tool_name, schema in effective_snapshot.items():
             by_skill.setdefault(schema.skill_name or "", []).append((tool_name, schema))
         for skill_name, tools in by_skill.items():
             lines.append(f"\n## Skill: {skill_name}" if skill_name else "\nAvailable tools:")
@@ -337,7 +345,7 @@ def _build_system_prompt(config: SessionConfig, llm_context: dict[str, Any] | No
                 if schema.output_schema:
                     lines.append(f"  Output schema: {json.dumps(schema.output_schema)}")
 
-    if config.tool_snapshot and config.use_monty:
+    if effective_snapshot and config.use_monty:
         lines.append(
             "\nYou have access to one tool: `execute_python`. "
             "The sandbox exposes ONLY the functions listed below as globals — nothing else exists. "
@@ -348,7 +356,7 @@ def _build_system_prompt(config: SessionConfig, llm_context: dict[str, Any] | No
             "Never split work across multiple execute_python calls. "
             "Available functions (call these directly as globals):"
         )
-        for tool_name, schema in config.tool_snapshot.items():
+        for tool_name, schema in effective_snapshot.items():
             fn = _safe_tool_name(tool_name)
             props = schema.input_schema.get("properties", {})
             params = ", ".join(f"{k}=..." for k in props)
@@ -371,6 +379,17 @@ def _build_system_prompt(config: SessionConfig, llm_context: dict[str, Any] | No
     return "\n".join(lines)
 
 
+def _make_native_tool_snapshot(name: str) -> ToolSnapshot:
+    return ToolSnapshot(
+        name=name,
+        description=NATIVE_TOOL_DESCRIPTIONS[name],
+        input_schema=NATIVE_TOOL_SCHEMAS[name],
+        output_schema={"type": "object"},
+        skill_name="native",
+        is_native=True,
+    )
+
+
 @app.task(name="run_agent_job", queue="default")
 async def run_agent_job(session_id: str, payload: str) -> None:
     data = json.loads(payload)
@@ -382,16 +401,219 @@ async def run_agent_job(session_id: str, payload: str) -> None:
     harness = config.harness
     model = config.model
     use_monty = config.use_monty
-    tool_snapshot = config.tool_snapshot
 
     # Runtime auth_context replaces agent default wholesale — no merge.
     auth_context = runtime_auth_context if runtime_auth_context is not None else config.auth_context
 
-    system_prompt = _build_system_prompt(config, runtime_llm_context)
+    # Inject native tools — must happen before building system prompt
+    native_tools = {name: _make_native_tool_snapshot(name) for name in NATIVE_TOOL_DESCRIPTIONS}
+    tool_snapshot = {**config.tool_snapshot, **native_tools}
+    system_prompt = _build_system_prompt(config, runtime_llm_context, extra_tools=native_tools)
 
     llm_api_key = os.environ.get(f"OMNIAGENT_{harness.upper()}_API_KEY")
 
+    # Shared defer state — set by native.defer_turn / native.defer_turn_until inside tool_exec
+    _defer_state: dict[str, DeferInfo] = {}
+
     async def tool_exec(tool_name: str, input_data: dict[str, Any]) -> dict[str, Any]:
+        # Native tools are handled here, not by the HTTP executor
+        if tool_name in (
+            "native.memory_get",
+            "native.memory_set",
+            "native.memory_delete",
+            "native.memory_list",
+        ):
+            from omniagent.control_plane.db import get_conn
+
+            await _emit_event(
+                session_id,
+                ToolCallEvent(
+                    tool=tool_name, input=input_data, harness=harness, skill_name="native"
+                ),
+            )
+            async with get_conn() as conn:
+                if tool_name == "native.memory_get":
+                    rows = await conn.execute(
+                        "SELECT value FROM agent_memory WHERE agent_name=%s AND key=%s",
+                        (config.agent_name, input_data["key"]),
+                    )
+                    row = await rows.fetchone()
+                    result = row["value"] if row else None
+
+                elif tool_name == "native.memory_set":
+                    await conn.execute(
+                        """INSERT INTO agent_memory (agent_name, key, value, updated_at)
+                           VALUES (%s, %s, %s, NOW())
+                           ON CONFLICT (agent_name, key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()""",
+                        (config.agent_name, input_data["key"], json.dumps(input_data["value"])),
+                    )
+                    result = {"ok": True}
+
+                elif tool_name == "native.memory_delete":
+                    await conn.execute(
+                        "DELETE FROM agent_memory WHERE agent_name=%s AND key=%s",
+                        (config.agent_name, input_data["key"]),
+                    )
+                    result = {"ok": True}
+
+                else:  # native.memory_list
+                    rows = await conn.execute(
+                        "SELECT key FROM agent_memory WHERE agent_name=%s ORDER BY key",
+                        (config.agent_name,),
+                    )
+                    result = {"keys": [r["key"] for r in await rows.fetchall()]}
+
+            await _emit_event(
+                session_id,
+                ToolResultEvent(
+                    tool=tool_name,
+                    success=True,
+                    input=input_data,
+                    output=result,
+                    harness=harness,
+                    skill_name="native",
+                ),
+            )
+            return result
+
+        if tool_name == "native.schedule_list":
+            from omniagent.control_plane.db import get_conn
+
+            await _emit_event(
+                session_id,
+                ToolCallEvent(
+                    tool=tool_name, input=input_data, harness=harness, skill_name="native"
+                ),
+            )
+            async with get_conn() as conn:
+                rows = await conn.execute(
+                    "SELECT id, cron_expr, prompt, enabled, next_run_at FROM schedules WHERE agent_name=%s ORDER BY created_at DESC",
+                    (config.agent_name,),
+                )
+                result = [
+                    {
+                        "schedule_id": str(r["id"]),
+                        "cron_expr": r["cron_expr"],
+                        "prompt": r["prompt"],
+                        "enabled": r["enabled"],
+                        "next_run_at": r["next_run_at"].isoformat() if r["next_run_at"] else None,
+                    }
+                    for r in await rows.fetchall()
+                ]
+            await _emit_event(
+                session_id,
+                ToolResultEvent(
+                    tool=tool_name,
+                    success=True,
+                    input=input_data,
+                    output=result,
+                    harness=harness,
+                    skill_name="native",
+                ),
+            )
+            return result
+
+        if tool_name == "native.schedule_create":
+            from croniter import croniter as _croniter
+
+            from omniagent.control_plane.db import get_conn
+
+            cron_expr = input_data.get("cron_expr", "")
+            prompt = input_data.get("prompt", "")
+            target_agent = config.agent_name
+            llm_ctx_raw = input_data.get("llm_context")
+            if llm_ctx_raw is not None:
+                from psycopg.types.json import Jsonb
+
+                llm_ctx = Jsonb(
+                    llm_ctx_raw if isinstance(llm_ctx_raw, dict) else {"value": llm_ctx_raw}
+                )
+            else:
+                llm_ctx = None
+            try:
+                c = _croniter(cron_expr)
+                next_run = datetime.fromtimestamp(c.get_next(float), tz=UTC)
+            except Exception as exc:
+                raise RuntimeError(f"invalid cron_expr {cron_expr!r}: {exc}") from exc
+            await _emit_event(
+                session_id,
+                ToolCallEvent(
+                    tool=tool_name, input=input_data, harness=harness, skill_name="native"
+                ),
+            )
+            async with get_conn() as conn:
+                rows = await conn.execute(
+                    """INSERT INTO schedules (agent_name, cron_expr, prompt, llm_context, next_run_at)
+                       VALUES (%s, %s, %s, %s, %s) RETURNING id""",
+                    (target_agent, cron_expr, prompt, llm_ctx, next_run),
+                )
+                schedule_id = str((await rows.fetchone())["id"])
+            result = {"schedule_id": schedule_id, "next_run_at": next_run.isoformat()}
+            await _emit_event(
+                session_id,
+                ToolResultEvent(
+                    tool=tool_name,
+                    success=True,
+                    input=input_data,
+                    output=result,
+                    harness=harness,
+                    skill_name="native",
+                ),
+            )
+            return result
+
+        if tool_name == "native.defer_turn":
+            delay = int(input_data.get("delay_seconds", 0))
+            info = DeferInfo(delay_seconds=delay)
+            _defer_state["info"] = info
+            await _emit_event(
+                session_id,
+                ToolCallEvent(
+                    tool=tool_name, input=input_data, harness=harness, skill_name="native"
+                ),
+            )
+            result = {"status": "deferred", "resume_in_seconds": delay}
+            await _emit_event(
+                session_id,
+                ToolResultEvent(
+                    tool=tool_name,
+                    success=True,
+                    input=input_data,
+                    output=result,
+                    harness=harness,
+                    skill_name="native",
+                ),
+            )
+            return result
+
+        if tool_name == "native.defer_turn_until":
+            ts_str = input_data.get("iso_timestamp", "")
+            try:
+                ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+            except ValueError as exc:
+                raise RuntimeError(f"invalid iso_timestamp: {ts_str!r}") from exc
+            info = DeferInfo(resume_at=ts)
+            _defer_state["info"] = info
+            await _emit_event(
+                session_id,
+                ToolCallEvent(
+                    tool=tool_name, input=input_data, harness=harness, skill_name="native"
+                ),
+            )
+            result = {"status": "deferred", "resume_at": ts.isoformat()}
+            await _emit_event(
+                session_id,
+                ToolResultEvent(
+                    tool=tool_name,
+                    success=True,
+                    input=input_data,
+                    output=result,
+                    harness=harness,
+                    skill_name="native",
+                ),
+            )
+            return result
+
         skill_name = tool_snapshot[tool_name].skill_name
         await _emit_event(
             session_id,
@@ -447,14 +669,62 @@ async def run_agent_job(session_id: str, payload: str) -> None:
             model=model,
         )
 
-        await _get_http_client().post(
-            f"{CONTROL_PLANE}/internal/sessions/{session_id}/result",
-            json={"result": result},
-            headers=_internal_headers(),
-            timeout=10,
-        )
+        if defer := _defer_state.get("info"):
+            await _handle_defer(session_id, result, history, data, defer)
+        else:
+            await _get_http_client().post(
+                f"{CONTROL_PLANE}/internal/sessions/{session_id}/result",
+                json={"result": result},
+                headers=_internal_headers(),
+                timeout=10,
+            )
 
     except Exception as exc:
         logger.exception("run_agent_job failed for session %s", session_id)
         await emit(ErrorEvent(reason=str(exc)))
         raise
+
+
+async def _handle_defer(
+    session_id: str,
+    result: str,
+    history: list[MessageRecord],
+    data: dict[str, Any],
+    defer: DeferInfo,
+) -> None:
+    """Save deferred state and schedule next turn."""
+    from omniagent.control_plane.db import get_conn
+
+    now = datetime.now(UTC).isoformat()
+    new_history = list(history)
+    new_history.append(MessageRecord(role="assistant", content=result, timestamp=now))
+    new_history.append(
+        MessageRecord(
+            role="user", content="[RESUME: Turn resumed. Continue your task.]", timestamp=now
+        )
+    )
+
+    serialized = json.dumps([m.model_dump() for m in new_history])
+    # Carry forward encrypted auth/llm context for the next turn
+    deferred_payload = json.dumps(
+        {"auth_context": data.get("auth_context"), "llm_context": data.get("llm_context")}
+    )
+
+    async with get_conn() as conn:
+        await conn.execute(
+            "UPDATE sessions SET status='deferred', messages=%s, deferred_payload=%s, updated_at=NOW() WHERE id=%s",
+            (serialized, deferred_payload, session_id),
+        )
+
+    scheduled_at = defer.scheduled_at()
+    await run_agent_job.configure(queue="default", schedule_at=scheduled_at).defer_async(
+        session_id=session_id,
+        payload=json.dumps(
+            {
+                "history": [m.model_dump() for m in new_history],
+                "auth_context": data.get("auth_context"),
+                "llm_context": data.get("llm_context"),
+            }
+        ),
+    )
+    logger.info("session %s deferred until %s", session_id, scheduled_at.isoformat())

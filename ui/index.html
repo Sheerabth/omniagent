@@ -112,6 +112,14 @@
   .sess-item .sess-status.failed { color: #f87171; background: #2a1010; }
   .sess-delete { font-size: 10px; color: #555; cursor: pointer; padding: 2px 4px; }
   .sess-delete:hover { color: #f87171; }
+  .run-item { padding: 8px 12px; border-bottom: 1px solid #171717; font-size: 12px; cursor: pointer; display: flex; align-items: center; gap: 8px; }
+  .run-item:hover { background: #1a1a1a; }
+  .run-status { font-size: 10px; padding: 1px 6px; border-radius: 3px; flex-shrink: 0; }
+  .run-status.running { color: #6fcf6f; background: #1a2a1a; }
+  .run-status.complete { color: #8ab4f8; background: #1a2040; }
+  .run-status.failed { color: #f87171; background: #2a1010; }
+  .run-status.deferred { color: #f0c040; background: #2a2010; }
+  .sched-item .sub2 { color: #4a9a4a; font-size: 11px; margin-top: 1px; }
   .stool { border-bottom: 1px solid #171717; padding: 10px 12px; font-size: 12px; }
   .stool-skill-header { padding: 6px 12px 3px; font-size: 10px; font-weight: 600; color: #666; text-transform: uppercase; letter-spacing: 0.5px; border-top: 1px solid #1e1e1e; margin-top: 4px; }
   .stool-header { display: flex; align-items: center; gap: 7px; }
@@ -143,6 +151,7 @@
   <button class="tab" onclick="switchTab('skills')">Skills</button>
   <button class="tab" onclick="switchTab('agents')">Agents</button>
   <button class="tab" onclick="switchTab('chat')">Chat</button>
+  <button class="tab" onclick="switchTab('schedules')">Schedules</button>
   <button class="tab" onclick="switchTab('settings')">Settings</button>
 </div>
 
@@ -303,6 +312,46 @@
   </div>
 </div>
 
+<!-- SCHEDULES -->
+<div id="panel-schedules" class="panel">
+  <div class="list-col">
+    <button class="new-btn btn-ghost" onclick="newSchedule()">+ New Schedule</button>
+    <h2>Schedules</h2>
+    <div id="schedules-list"><p class="empty">Loading…</p></div>
+    <div id="orphaned-runs-section" style="display:none;margin-top:20px">
+      <h2 style="color:#888">Orphaned Runs <span style="font-size:11px;font-weight:normal">(schedule deleted)</span></h2>
+      <div id="orphaned-runs-list"></div>
+    </div>
+  </div>
+  <div class="form-col">
+    <div id="schedule-form" class="card" style="display:none">
+      <label>Agent</label>
+      <select id="sched-agent"></select>
+      <label>Cron Expression</label>
+      <input type="text" id="sched-cron" placeholder="0 9 * * *  (daily at 9am UTC)">
+      <label>Prompt</label>
+      <textarea id="sched-prompt" style="min-height:100px" placeholder="What the agent should do on each run…"></textarea>
+      <label>LLM Context <span style="color:#888;font-size:11px">(JSON — visible to LLM in system prompt)</span></label>
+      <textarea id="sched-llm-context" style="font-family:monospace;font-size:12px;min-height:60px" placeholder='{"key": "value"}'></textarea>
+      <label style="display:flex;align-items:center;gap:8px;margin-top:14px">
+        <input type="checkbox" id="sched-enabled" checked style="width:auto;margin:0"> Enabled
+      </label>
+      <div class="btn-row">
+        <button class="btn-primary" onclick="saveSchedule()">Save</button>
+        <button class="btn-danger" id="sched-delete-btn" onclick="deleteSchedule()" style="display:none">Delete</button>
+        <button class="btn-ghost" onclick="closeScheduleForm()">Cancel</button>
+      </div>
+    </div>
+    <div id="schedule-runs-panel" style="display:none;margin-top:16px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+        <h2 style="margin:0">Recent Runs</h2>
+        <button class="btn-ghost btn-xs" onclick="loadScheduleRuns(currentScheduleId)">↺ Refresh</button>
+      </div>
+      <div id="schedule-runs-list"><p class="empty">No runs yet</p></div>
+    </div>
+  </div>
+</div>
+
 <!-- SETTINGS -->
 <div id="panel-settings" class="panel">
   <div class="list-col">
@@ -392,7 +441,7 @@ function toast(msg, ok = true) {
 function switchTab(tab) {
   currentTab = tab;
   document.querySelectorAll('.tab').forEach((el, i) => {
-    el.classList.toggle('active', ['tools','skills','agents','chat','settings'][i] === tab);
+    el.classList.toggle('active', ['tools','skills','agents','chat','schedules','settings'][i] === tab);
   });
   document.querySelectorAll('.panel').forEach(el => el.classList.remove('active'));
   document.getElementById('panel-' + tab).classList.add('active');
@@ -408,6 +457,7 @@ async function loadAll() {
     ]);
     renderTools(); renderSkills(); renderAgents(); renderChatAgents();
     if (currentTab === 'settings') loadApiKeys();
+    if (currentTab === 'schedules') loadSchedules();
     if (new URLSearchParams(location.search).get('oauth2') === 'success') {
       toast('OAuth2 connected'); history.replaceState(null, '', '/');
     }
@@ -1198,6 +1248,173 @@ function sidebarSection(label, value) {
 
 function escHtml(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ── Schedules ──────────────────────────────────────────────────────────────
+
+let allSchedules = [], currentScheduleId = null;
+
+async function loadSchedules() {
+  try {
+    [allSchedules] = await Promise.all([
+      api('GET', '/schedules'),
+      loadOrphanedRuns(),
+    ]);
+    allSchedules = allSchedules || [];
+    renderSchedules();
+  } catch(e) { toast('Load schedules failed: ' + e.message, false); }
+}
+
+async function loadOrphanedRuns() {
+  try {
+    const runs = await api('GET', '/schedules/orphaned-runs') || [];
+    const sec = document.getElementById('orphaned-runs-section');
+    const el = document.getElementById('orphaned-runs-list');
+    if (!runs.length) { sec.style.display = 'none'; return; }
+    sec.style.display = 'block';
+    el.innerHTML = runs.map(r => `
+      <div class="run-item" style="cursor:pointer" onclick="openScheduleRun('${r.id}','${escHtml(r.agent_name)}')">
+        <span class="run-status ${r.status}">${r.status}</span>
+        <span style="font-size:11px;color:#aaa;flex:1">${escHtml(r.agent_name)}</span>
+        <span style="font-size:11px;color:#666">${new Date(r.created_at).toLocaleString()}</span>
+        <span class="sess-delete" onclick="event.stopPropagation();deleteOrphanedRun('${r.id}')">✕</span>
+      </div>`).join('');
+  } catch(e) { /* ignore */ }
+}
+
+async function deleteOrphanedRun(sessionId) {
+  if (!confirm('Delete this run?')) return;
+  await api('DELETE', '/sessions/' + sessionId);
+  loadOrphanedRuns();
+}
+
+function renderSchedules() {
+  const el = document.getElementById('schedules-list');
+  if (!allSchedules.length) { el.innerHTML = '<p class="empty">No schedules yet</p>'; return; }
+  el.innerHTML = allSchedules.map(s => `
+    <div class="item${s.id === currentScheduleId ? ' selected' : ''}" onclick="selectSchedule('${s.id}')">
+      <div class="name" style="display:flex;align-items:center;gap:6px">
+        ${escHtml(s.agent_name)}
+        <span style="font-size:10px;color:${s.enabled ? '#4a9a4a' : '#666'}">${s.enabled ? '● on' : '○ off'}</span>
+      </div>
+      <div class="sub">${escHtml(s.cron_expr)}</div>
+      ${s.next_run_at ? `<div class="sub2">next: ${new Date(s.next_run_at).toLocaleString()}</div>` : ''}
+    </div>`).join('');
+}
+
+function newSchedule() {
+  currentScheduleId = null;
+  renderScheduleAgentSelect();
+  document.getElementById('sched-cron').value = '';
+  document.getElementById('sched-prompt').value = '';
+  document.getElementById('sched-llm-context').value = '';
+  document.getElementById('sched-enabled').checked = true;
+  document.getElementById('sched-delete-btn').style.display = 'none';
+  document.getElementById('schedule-runs-panel').style.display = 'none';
+  document.getElementById('schedule-form').style.display = 'block';
+  renderSchedules();
+}
+
+function selectSchedule(id) {
+  const s = allSchedules.find(x => x.id === id);
+  if (!s) return;
+  currentScheduleId = id;
+  renderScheduleAgentSelect(s.agent_name);
+  document.getElementById('sched-cron').value = s.cron_expr;
+  document.getElementById('sched-prompt').value = s.prompt;
+  document.getElementById('sched-llm-context').value = s.llm_context ? JSON.stringify(s.llm_context, null, 2) : '';
+  document.getElementById('sched-enabled').checked = s.enabled;
+  document.getElementById('sched-delete-btn').style.display = 'inline-block';
+  document.getElementById('schedule-form').style.display = 'block';
+  document.getElementById('schedule-runs-panel').style.display = 'block';
+  loadScheduleRuns(id);
+  renderSchedules();
+}
+
+function renderScheduleAgentSelect(selected) {
+  const sel = document.getElementById('sched-agent');
+  const names = [...new Set(allAgents.map(a => a.name))];
+  sel.innerHTML = names.map(n =>
+    `<option value="${escHtml(n)}"${n === selected ? ' selected' : ''}>${escHtml(n)}</option>`
+  ).join('');
+}
+
+async function loadScheduleRuns(id) {
+  const el = document.getElementById('schedule-runs-list');
+  el.innerHTML = '<p class="empty">Loading…</p>';
+  try {
+    const runs = await api('GET', `/schedules/${id}/runs`) || [];
+    if (!runs.length) { el.innerHTML = '<p class="empty">No runs yet</p>'; return; }
+    const agentName = (allSchedules.find(s => s.id === id) || {}).agent_name || '';
+    el.innerHTML = runs.map(r => `
+      <div class="run-item" style="cursor:pointer" onclick="openScheduleRun('${r.id}','${escHtml(agentName)}')">
+        <span class="run-status ${r.status}">${r.status}</span>
+        <span style="font-family:monospace;font-size:10px;color:#555;flex:1">${r.id.substring(0,8)}…</span>
+        <span style="font-size:11px;color:#666">${new Date(r.created_at).toLocaleString()}</span>
+        <span style="font-size:10px;color:#4a9a4a">→ chat</span>
+      </div>`).join('');
+  } catch(e) { el.innerHTML = '<p class="empty" style="color:#f87171">Load failed</p>'; }
+}
+
+async function openScheduleRun(sessionId, agentName) {
+  switchTab('chat');
+  // select the matching agent version in the dropdown
+  const sel = document.getElementById('chat-agent-select');
+  const opt = Array.from(sel.options).find(o => {
+    try { return JSON.parse(o.value).n === agentName; } catch { return false; }
+  });
+  if (opt && sel.value !== opt.value) {
+    sel.value = opt.value;
+    await loadSessions();
+  }
+  await switchToSession(sessionId);
+}
+
+function closeScheduleForm() {
+  currentScheduleId = null;
+  document.getElementById('schedule-form').style.display = 'none';
+  document.getElementById('schedule-runs-panel').style.display = 'none';
+  renderSchedules();
+}
+
+async function saveSchedule() {
+  const llmRaw = document.getElementById('sched-llm-context').value.trim();
+  let llm_context = null;
+  if (llmRaw) {
+    try { llm_context = JSON.parse(llmRaw); }
+    catch { toast('LLM Context must be valid JSON', false); return; }
+  }
+  const body = {
+    agent_name: document.getElementById('sched-agent').value,
+    cron_expr: document.getElementById('sched-cron').value.trim(),
+    prompt: document.getElementById('sched-prompt').value.trim(),
+    llm_context,
+    enabled: document.getElementById('sched-enabled').checked,
+  };
+  if (!body.cron_expr || !body.prompt) { toast('Cron and prompt required', false); return; }
+  try {
+    if (currentScheduleId) {
+      await api('PATCH', `/schedules/${currentScheduleId}`, {
+        cron_expr: body.cron_expr, prompt: body.prompt,
+        llm_context: body.llm_context, enabled: body.enabled,
+      });
+    } else {
+      await api('POST', '/schedules', body);
+    }
+    toast('Schedule saved');
+    await loadSchedules();
+    closeScheduleForm();
+  } catch(e) { toast(e.message, false); }
+}
+
+async function deleteSchedule() {
+  if (!currentScheduleId || !confirm('Delete this schedule?')) return;
+  try {
+    await api('DELETE', `/schedules/${currentScheduleId}`);
+    toast('Schedule deleted');
+    closeScheduleForm();
+    await loadSchedules();
+  } catch(e) { toast(e.message, false); }
 }
 
 // init

@@ -12,12 +12,13 @@ class ToolSnapshot(BaseModel):
     description: str
     input_schema: dict[str, Any]
     output_schema: dict[str, Any]
-    openapi_method: str
-    openapi_path: str
-    openapi_base_url: str
+    openapi_method: str = ""
+    openapi_path: str = ""
+    openapi_base_url: str = ""
     openapi_security: dict | None = None
     timeout: int | None = None
     skill_name: str = ""
+    is_native: bool = False  # native tools are handled before the HTTP executor
 
 
 class SkillSnapshot(BaseModel):

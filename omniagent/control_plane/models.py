@@ -90,6 +90,8 @@ class SessionRecord(BaseModel):
     agent_version: str
     skill_versions: dict[str, str]
     status: str
+    schedule_id: uuid.UUID | None = None
+    is_scheduled: bool = False
     created_at: datetime
 
 
@@ -97,6 +99,10 @@ class RunRequest(BaseModel):
     prompt: str
     auth_context: Any = None
     llm_context: Any = None
+
+
+class ResumeRequest(BaseModel):
+    message: str = ""  # injected as [RESUME: <message>] user turn
 
 
 class MessageRecord(BaseModel):
@@ -186,3 +192,35 @@ class SessionEventRequest(BaseModel):
     harness: str | None = None
     error: str | None = None
     skill_name: str | None = None
+
+
+# ── Schedules ──────────────────────────────────────────────────────────────
+
+
+class ScheduleCreate(BaseModel):
+    agent_name: str
+    cron_expr: str
+    prompt: str
+    llm_context: Any = None
+    auth_context: Any = None
+    enabled: bool = True
+
+
+class ScheduleUpdate(BaseModel):
+    cron_expr: str | None = None
+    prompt: str | None = None
+    llm_context: Any = None
+    enabled: bool | None = None
+
+
+class ScheduleRecord(BaseModel):
+    id: uuid.UUID
+    agent_name: str
+    cron_expr: str
+    prompt: str
+    llm_context: Any = None
+    enabled: bool
+    last_run_at: datetime | None = None
+    next_run_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime

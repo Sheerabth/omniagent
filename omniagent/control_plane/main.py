@@ -13,6 +13,7 @@ from omniagent.control_plane.routes import (
     agents,
     internal,
     oauth2,
+    schedules,
     sessions,
     settings,
     skills,
@@ -116,6 +117,7 @@ app.include_router(tools.router)
 app.include_router(skills.router)
 app.include_router(agents.router)
 app.include_router(sessions.router)
+app.include_router(schedules.router)
 app.include_router(settings.router)
 app.include_router(internal.router)
 app.include_router(sse.router)
