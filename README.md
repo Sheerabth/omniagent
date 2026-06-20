@@ -2,9 +2,7 @@
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-Self-hosted platform for running AI agents across multiple LLM providers. Define tools once in Pydantic — they work with any supported agent harness (Claude, Gemini/Antigravity).
-
-Your microservices annotate functions with `@tool`. OmniAgent discovers them, routes calls, passes `auth_context` (blind-piped) and `llm_context` (LLM-visible), and manages agent sessions. Use the built-in UI or hit the REST API.
+Self-hosted platform for running AI agents across multiple LLM providers. Import any OpenAPI spec as tools and OmniAgent handles auth, routing, and execution. Use the built-in UI or hit the REST API.
 
 ---
 
@@ -19,14 +17,12 @@ flowchart LR
     subgraph Auth["Auth layers"]
         A1["API Key<br/>X-OmniAgent-Key<br/>(argon2, revocable)"]
         A2["Internal Key<br/>X-OmniAgent-Key<br/>(plain match, env)"]
-        A3["Worker Assertion<br/>X-OmniAgent-Assertion<br/>(HS256 JWT, 60s TTL)"]
-        A4["Context Blob<br/>opaque Any<br/>(consumer-owned auth)"]
+        A3["Context Blob<br/>opaque Any<br/>(consumer-owned auth)"]
     end
 
     Client["Client UI"] -->|"API Key"| CP["Control Plane"]
     Worker -->|"Internal Key"| CP
-    Worker -->|"JWT Assertion"| Service["Service"]
-    Client -->|"auth_context + llm_context<br/>via CP→Worker→Service"| Service
+    Client -->|"auth_context (blind-piped to tools)<br/>llm_context (injected into system prompt)"| CP
 ```
 
 ### Execution flow
@@ -37,26 +33,23 @@ flowchart TD
     CP -->|"UPDATE sessions<br/>(messages + context)"| DB["Postgres"]
     CP -->|"DEFER job (Procrastinate)<br/>{history, auth_context, llm_context}"| Q["Job Queue"]
     CP -->|"202 accepted"| UI
-    UI -->|"2. GET /sessions/X/stream"| CP
-    CP <-->|"pub/sub"| Redis["Redis<br/>channel: session_X"]
-    Redis <-->|"SSE"| UI
+    UI -->|"2. GET /sessions/X/stream (SSE)"| CP
+    CP <-->|"LISTEN/NOTIFY"| DB
 
     Q -->|"dequeue"| Worker["Worker"]
     Worker -->|"1. SELECT config"| DB
     DB -->|"agent, skills,<br/>tools snapshot"| Worker
     Worker -->|"2. build system prompt"| Worker
-    Worker -->|"3. adapter.run()"| Harness["Claude SDK<br/>or Antigravity"]
+    Worker -->|"3. adapter.run()"| Harness["claude<br/>or antigravity"]
     Harness -->|"LLM decides<br/>to call tool"| Tool["tool_executor()"]
-    Tool -->|"POST /execute<br/>X-OmniAgent-Assertion: JWT<br/>{tool, input, auth_context, llm_context, session_id}"| Service["Service"]
+    Tool -->|"HTTP request<br/>+ auth headers"| Service["External API / Service"]
     Service -->|"output dict"| Tool
     Tool -->|"_emit_event()"| Event["/internal/sessions/X/event"]
-    Event -->|"UPDATE tool_calls"| DB
-    Event -->|"PUBLISH"| Redis
+    Event -->|"UPDATE tool_calls<br/>pg_notify()"| DB
     Harness -->|"final text"| Worker
     Worker -->|"POST /internal/sessions/X/result"| Result["Control Plane"]
-    Result -->|"UPDATE status=complete"| DB
-    Result -->|"PUBLISH"| Redis
-    Redis -->|"SSE: complete"| UI
+    Result -->|"UPDATE status=complete<br/>pg_notify()"| DB
+    DB -->|"SSE: complete"| UI
 ```
 
 ### Context forwarding (identity + personalization)
@@ -66,11 +59,9 @@ flowchart TD
 ```mermaid
 flowchart LR
     Client["Client UI"] -->|"POST /sessions/X/run<br/>auth_context: {token, org}<br/>llm_context: {name, locale}"| CP["Control Plane"]
-    CP -->|"defer_async<br/>payload.auth_context<br/>payload.llm_context"| Worker["Worker"]
-    Worker -->|"POST /execute<br/>body.auth_context<br/>body.llm_context"| Service["Service"]
+    CP -->|"defer job<br/>payload.auth_context<br/>payload.llm_context"| Worker["Worker"]
+    Worker -->|"auth headers injected<br/>from auth_context + security scheme"| API["External API"]
     Worker -->|"_build_system_prompt<br/>llm_context injected"| LLM["LLM"]
-    Service -->|"ToolInput.auth_context<br/>ToolInput.llm_context"| Tool["Tool Function"]
-    Tool -->|"validate token<br/>call downstream APIs"| Downstream["Consumer's Services"]
 ```
 
 ### Auth verification
@@ -83,40 +74,10 @@ flowchart TD
         Resolve -->|"argon2 match"| Api["api ✓"]
         Resolve -->|"no match"| Deny1["401"]
     end
-    subgraph "Worker → Service"
-        Req2["X-OmniAgent-Assertion"] --> JWT["jwt.decode(HS256)"]
-        JWT -->|"valid + not expired"| Allow["200 ✓"]
-        JWT -->|"invalid / expired"| Deny2["401"]
+    subgraph "Worker → External API"
+        Req3["auth_context"] --> Sec["security scheme<br/>(bearer / apiKey / basic / oauth2 / oidc)"]
+        Sec -->|"injected at call time"| Ext["External API ✓"]
     end
-```
-
-### Internal events
-
-```mermaid
-flowchart LR
-    Worker["Worker"] -->|"POST /internal/sessions/X/event"| CP["Control Plane"]
-    CP -->|"UPDATE sessions<br/>(tool_calls, messages)"| DB["Postgres"]
-    CP -->|"PUBLISH"| Redis["Redis"]
-    Redis -->|"SSE"| UI["UI"]
-
-    subgraph Events["Event types"]
-        E1["thinking"]
-        E2["tool_call"]
-        E3["tool_result"]
-        E4["error"]
-        E5["complete"]
-    end
-```
-
-### Monty (use_monty=true)
-
-```mermaid
-flowchart TD
-    LLM["LLM"] -->|"execute_python(code, observation)"| Monty["run_monty_code()"]
-    Monty -->|"Monty sandbox<br/>runs Python"| PyCall["get_weather(city='Tokyo')"]
-    PyCall -->|"_make_sync_tool<br/>asyncio.run(tool_executor)"| Tool["POST /execute"]
-    Tool -->|"result dict"| PyCall
-    PyCall -->|"last expression"| LLM
 ```
 
 ### Data flow by component
@@ -124,13 +85,11 @@ flowchart TD
 | Component | Reads from | Writes to |
 |-----------|-----------|-----------|
 | **UI** | Control Plane (REST + SSE) | Control Plane (REST) |
-| **Control Plane** | Postgres (config, sessions) | Postgres, Redis (pub), Procrastinate (jobs) |
-| **Worker** | Postgres (config), Procrastinate (jobs) | Service HTTP, Control Plane (internal API) |
-| **Redis** | Control Plane (publish) | Control Plane (subscribe → SSE → UI) |
-| **Service** | Worker (HTTP POST /execute) | Worker (HTTP response) |
-| **LLM** | Worker (system prompt + history + tools) | Worker (tool calls + final text) |
+| **Control Plane** | Postgres (config, sessions) | Postgres, Procrastinate (jobs) |
+| **Worker** | Postgres (config), Procrastinate (jobs) | External APIs, Control Plane (internal API) |
+| **Postgres** | Control Plane (writes) | Control Plane (LISTEN/NOTIFY → SSE → UI) |
 
-**Hierarchy:** `Tool` (code) → `Skill` (config) → `Agent` (config) → `Session` (runtime)
+**Hierarchy:** `Tool` (code or OpenAPI) → `Skill` (config) → `Agent` (config) → `Session` (runtime)
 
 ---
 
@@ -138,7 +97,6 @@ flowchart TD
 
 - Python 3.12+
 - PostgreSQL 14+
-- Redis 7+
 - [uv](https://docs.astral.sh/uv/)
 
 ---
@@ -159,7 +117,7 @@ uv sync
 docker compose up -d
 ```
 
-Starts Postgres and Redis. Migrations auto-apply on control plane startup.
+Starts Postgres. Migrations auto-apply on control plane startup.
 
 ### 3. Environment variables
 
@@ -172,8 +130,12 @@ cp .env.example .env
 | `DATABASE_URL` | ✅ | `postgresql://omniagent:omniagent@localhost:5432/omniagent` |
 | `OMNIAGENT_INTERNAL_KEY` | ✅ | Shared secret for CP ↔ Worker + Worker → Service JWT assertion |
 | `OMNIAGENT_API_KEY` | — | API key for services and external UIs (generate via `/settings/api-keys`) |
-| `OMNIAGENT_{HARNESS}_API_KEY` | — | LLM API key per harness, e.g. `OMNIAGENT_CLAUDE_API_KEY` |
+| `OMNIAGENT_{HARNESS}_API_KEY` | — | LLM API key per harness, e.g. `OMNIAGENT_CLAUDE_API_KEY`, `OMNIAGENT_ANTIGRAVITY_API_KEY` |
+| `OMNIAGENT_CONTROL_PLANE` | — | URL the worker uses to reach the control plane (default: `http://localhost:8080`) |
 | `MAX_HISTORY_TURNS` | — | Conversation history limit (default: `50`) |
+| `TOOL_EXECUTION_TIMEOUT` | — | Default HTTP timeout in seconds for tool calls (default: `30`); overridden per-tool via the UI |
+| `MONTY_EXECUTION_TIMEOUT` | — | Timeout in seconds for Monty sandbox execution (default: `30`) |
+| `MONTY_EXECUTOR_WORKERS` | — | Thread pool size for Monty (default: `4`) |
 
 ### 4. Start the control plane
 
@@ -204,65 +166,77 @@ curl -X POST http://localhost:8080/settings/api-keys \
   -d '{"name": "my-service"}'
 ```
 
-Returns `{ "key": "..." }` — shown once. Pass this to your service as `OMNIAGENT_API_KEY`.
+Returns `{ "key": "..." }` — shown once.
 
 ---
 
-## Instrument your service
+## Import tools from an OpenAPI spec
 
-Define tools with the `@tool` decorator:
+Point OmniAgent at any OpenAPI 3.x spec and it becomes a set of callable tools. No code changes to the target service.
 
-```python
-from omniagent import tool, ToolInput, ToolOutput
-from pydantic import Field
-
-class ChargeInput(ToolInput):
-    amount: float = Field(description="Amount in USD")
-    card_token: str = Field(description="Stripe card token")
-
-class ChargeOutput(ToolOutput):
-    transaction_id: str
-
-@tool(description="Charge a card for a given amount")
-async def charge_card(inp: ChargeInput) -> ChargeOutput:
-    return ChargeOutput(transaction_id="txn_123")
+```bash
+curl -X POST http://localhost:8080/tools/import-openapi \
+  -H "X-OmniAgent-Key: <key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "spec": "<YAML or JSON string, or parsed JSON object>",
+    "namespace": "weather",
+    "base_url": "https://api.example.com"
+  }'
 ```
 
-Register at startup and mount the execute route:
+`base_url` is optional — used when the spec has no `servers` entry or you want to override it. Tool names are derived from the operation `summary` (slugified), falling back to `operationId`, then `{method}_{path}`.
 
-```python
-import omniagent
-import os
-from fastapi import FastAPI, HTTPException, Request
+Delete tools after import:
 
-omniagent.init(
-    service="payments",
-    namespace="billing",
-    control_plane="http://localhost:8080",
-    api_key=os.environ["OMNIAGENT_API_KEY"],
-    execute_url="http://payments-svc:8001/execute",
-)
+```bash
+# Delete one tool
+curl -X DELETE http://localhost:8080/tools/weather.get_weather -H "X-OmniAgent-Key: <key>"
 
-app = FastAPI()
-
-@app.post("/execute")
-async def execute(request: Request):
-    try:
-        output = await omniagent.handle_execute(
-            await request.json(), dict(request.headers)
-        )
-        return {"output": output}
-    except ValueError as e:
-        raise HTTPException(401, detail=str(e)) from e
-    except KeyError as e:
-        raise HTTPException(404, detail=str(e)) from e
-    except Exception as e:
-        raise HTTPException(500, detail=str(e)) from e
+# Delete all tools in a namespace
+curl -X DELETE http://localhost:8080/tools/namespace/weather -H "X-OmniAgent-Key: <key>"
 ```
 
-`handle_execute` validates the worker JWT assertion (when `OMNIAGENT_INTERNAL_KEY` is set) and injects `auth_context` and `llm_context` into `ToolInput`. Your tool functions receive both automatically — `auth_context` for downstream API calls, `llm_context` for personalization (name, locale, preferences).
+---
 
-Tools must be stateless — consecutive calls in the same session may hit different replicas.
+## Auth for OpenAPI tools
+
+OmniAgent reads security schemes from the OpenAPI spec and injects credentials at call time from the agent's `auth_context`. All standard OpenAPI auth types are supported:
+
+| Scheme | How | `auth_context` keys |
+|--------|-----|---------------------|
+| `http bearer` | `Authorization: Bearer <token>` | `token` |
+| `http basic` | `Authorization: Basic <b64>` | `username`, `password` |
+| `apiKey` (header) | Custom header (name from spec) | scheme name from spec |
+| `apiKey` (query) | Query param (name from spec) | scheme name from spec |
+| `apiKey` (cookie) | Cookie (name from spec) | scheme name from spec |
+| `oauth2` client credentials | Exchanges `client_id`/`client_secret` for token | `client_id`, `client_secret` |
+| `oauth2` refresh token | Exchanges refresh token, caches access token | `client_id`, `client_secret`, `refresh_token` |
+| `oauth2` auth code | Browser redirect → token exchange → stored refresh | `client_id`, `client_secret` *(after connect)* |
+| `openIdConnect` | Discovery → token exchange | `client_id`, `client_secret` |
+
+**Token caching:** OAuth2 and OIDC access tokens are cached in memory and refreshed 30s before expiry. OIDC discovery documents are cached per issuer.
+
+**OAuth2 authorization code** requires a one-time browser connect flow. OmniAgent provides `GET /oauth2/connect` (redirects to provider) and `GET /oauth2/callback` (exchanges code, stores tokens into agent's `auth_context`). After connecting, the worker handles token refresh automatically — works with Google, Slack, GitHub, Notion, and any OAuth2-compliant provider.
+
+Set `auth_context` on the agent (stored, used as default for all sessions) or pass it per-run (overrides agent default):
+
+```bash
+curl -X POST http://localhost:8080/sessions/$SESSION/run \
+  -H "X-OmniAgent-Key: <key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "What is the weather in Tokyo?",
+    "auth_context": {
+      "token": "my-bearer-token",
+      "APIKeyHeader": "my-api-key",
+      "username": "admin",
+      "password": "secret",
+      "client_id": "my-client",
+      "client_secret": "my-secret"
+    }
+  }'
+```
 
 ---
 
@@ -276,11 +250,11 @@ curl -X POST http://localhost:8080/skills \
   -H "X-OmniAgent-Key: <key>" \
   -H "Content-Type: application/json" \
   -d '{
-    "name": "billing",
+    "name": "weather",
     "version": "v1",
-    "tool_names": ["billing.charge_card"],
-    "instructions": "Use charge_card when the user wants to make a payment.",
-    "system_prompt": "You have access to billing tools."
+    "tool_names": ["weather.get_weather", "weather.get_uv_index"],
+    "instructions": "Use these tools to answer weather-related questions.",
+    "system_prompt": "You have access to weather tools."
   }'
 
 # Create an agent
@@ -288,15 +262,15 @@ curl -X POST http://localhost:8080/agents \
   -H "X-OmniAgent-Key: <key>" \
   -H "Content-Type: application/json" \
   -d '{
-    "name": "support-bot",
+    "name": "weather-bot",
     "version": "v1",
     "harness": "claude",
-    "skill_refs": {"billing": "v1"},
-    "system_prompt": "You are a helpful support assistant."
+    "skill_refs": {"weather": "v1"},
+    "system_prompt": "You are a helpful weather assistant."
   }'
 ```
 
-Supported harnesses: `"claude"` (Claude Code SDK), `"antigravity"` (Gemini).
+Supported harnesses: `"claude"`, `"antigravity"` (Gemini).
 
 ---
 
@@ -307,13 +281,13 @@ Supported harnesses: `"claude"` (Claude Code SDK), `"antigravity"` (Gemini).
 SESSION=$(curl -s -X POST http://localhost:8080/sessions \
   -H "X-OmniAgent-Key: <key>" \
   -H "Content-Type: application/json" \
-  -d '{"agent_name": "support-bot"}' | jq -r .id)
+  -d '{"agent_name": "weather-bot"}' | jq -r .id)
 
-# Send a message (auth_context blind-piped to tools, llm_context visible to LLM)
+# Send a message
 curl -X POST http://localhost:8080/sessions/$SESSION/run \
   -H "X-OmniAgent-Key: <key>" \
   -H "Content-Type: application/json" \
-  -d '{"prompt": "Charge $50 to card tok_visa", "auth_context": {"user_id": "u1", "token": "..."}, "llm_context": {"name": "Alice", "locale": "en-US"}}'
+  -d '{"prompt": "Whats the weather in Tokyo?", "auth_context": {"token": "..."}, "llm_context": {"name": "Alice"}}'
 # → 202 Accepted
 
 # Stream events (SSE)
@@ -321,13 +295,13 @@ curl -N http://localhost:8080/sessions/$SESSION/stream \
   -H "X-OmniAgent-Key: <key>"
 ```
 
-SSE event types: `thinking`, `tool_call`, `tool_result`, `error`, `complete`.
+SSE event types: `thinking`, `tool_call`, `tool_result`, `system_prompt`, `error`, `complete`.
 
 ---
 
 ## Monty (sandboxed code execution)
 
-Set `use_monty: true` on an agent to enable sandboxed Python execution. The agent gains an `execute_python` tool — code runs in Monty's interpreter with your registered tools available as Python functions. The LLM writes Python, calls tools, and returns the result — all in a single turn. No containers needed.
+Set `use_monty: true` on an agent to enable sandboxed Python execution. The agent gains an `execute_python` tool — code runs in Monty's interpreter with your registered tools available as plain Python functions. The LLM writes a single Python block, calls tools, and returns the result. No containers needed, 0.004ms sandbox startup.
 
 ---
 
@@ -339,7 +313,7 @@ Set `use_monty: true` on an agent to enable sandboxed Python execution. The agen
 | `GET /settings/api-keys` | List API keys |
 | `DELETE /settings/api-keys/{id}` | Revoke an API key |
 
-LLM API keys are set via environment variables: `OMNIAGENT_CLAUDE_API_KEY` and `OMNIAGENT_ANTIGRAVITY_API_KEY`.
+LLM API keys are set via environment variables: `OMNIAGENT_{HARNESS}_API_KEY` (e.g. `OMNIAGENT_ANTIGRAVITY_API_KEY`).
 
 ---
 
@@ -349,3 +323,4 @@ LLM API keys are set via environment variables: `OMNIAGENT_CLAUDE_API_KEY` and `
 - Control plane can run multiple instances — `pg_try_advisory_lock` prevents duplicate startup reconciliation.
 - Secrets come from environment variables — use Docker secrets or k8s secrets, not env files.
 - The `.venv` is created by `uv sync` — mount it in your image or use `uv run` directly.
+- SSE uses PostgreSQL `LISTEN/NOTIFY` — no Redis required.

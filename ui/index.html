@@ -21,20 +21,21 @@
   .item { padding: 10px 12px; background: #1a1a1a; border: 1px solid #272727; border-radius: 6px; margin-bottom: 6px; cursor: pointer; font-size: 13px; }
   .item:hover { border-color: #444; }
   .item.selected { border-color: #4f7ef8; background: #1a2240; }
-  .item .name { font-weight: 500; color: #fff; }
-  .item .sub { color: #666; font-size: 11px; margin-top: 2px; }
+  .item .name { font-weight: 500; color: #fff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .item .sub { color: #666; font-size: 11px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .card { background: #1a1a1a; border: 1px solid #272727; border-radius: 8px; padding: 20px; }
   label { display: block; font-size: 12px; color: #888; margin-bottom: 4px; margin-top: 14px; }
   label:first-child { margin-top: 0; }
-  input[type=text], textarea, select {
+  input[type=text], input[type=number], textarea, select {
     width: 100%; background: #111; border: 1px solid #333; color: #e0e0e0;
     padding: 8px 10px; border-radius: 6px; font-size: 13px; font-family: inherit;
   }
   textarea { resize: vertical; min-height: 80px; }
   input:focus, textarea:focus, select:focus { outline: none; border-color: #4f7ef8; }
-  .checkbox-grid { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+  .checkbox-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 6px; margin-top: 4px; }
   .checkbox-grid label { margin: 0; display: flex; align-items: center; gap: 6px; font-size: 12px; color: #ccc;
-    background: #111; border: 1px solid #2a2a2a; padding: 4px 8px; border-radius: 4px; cursor: pointer; }
+    background: #111; border: 1px solid #2a2a2a; padding: 4px 8px; border-radius: 4px; cursor: pointer;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .checkbox-grid input[type=checkbox] { width: auto; margin: 0; accent-color: #4f7ef8; }
   .btn-row { display: flex; gap: 8px; margin-top: 16px; }
   button { padding: 8px 16px; border-radius: 6px; font-size: 13px; cursor: pointer; border: none; font-family: inherit; }
@@ -53,6 +54,9 @@
   .toast.ok { border-color: #2a5c2a; color: #6fcf6f; }
   .toast.err { border-color: #5c2a2a; color: #f87171; }
   .empty { color: #555; font-size: 13px; padding: 12px 0; }
+  input[type=number]::-webkit-inner-spin-button,
+  input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+  input[type=number] { -moz-appearance: textfield; }
   .tag { display: inline-block; background: #1e2a1e; color: #6fcf6f; border: 1px solid #2a4a2a;
     padding: 2px 7px; border-radius: 4px; font-size: 11px; margin: 2px; }
   .tag.blue { background: #1e2040; color: #8ab4f8; border-color: #2a3060; }
@@ -152,6 +156,11 @@
       <p id="td-desc" style="font-size:13px;color:#ccc;margin-top:4px"></p>
       <label>Endpoint</label>
       <p id="td-endpoint" style="font-size:12px;color:#8ab4f8;font-family:monospace;margin-top:4px"></p>
+      <div style="display:flex;align-items:center;gap:8px;margin-top:14px">
+        <label style="margin:0;white-space:nowrap;color:#888;font-size:12px">Timeout (s)</label>
+        <input type="number" id="td-timeout" min="1" placeholder="30" style="width:72px;padding:4px 8px">
+        <button class="btn-primary btn-xs" onclick="saveToolTimeout()">Save</button>
+      </div>
       <label>Input Schema</label>
       <pre id="td-in" style="background:#111;padding:10px;border-radius:6px;font-size:11px;overflow:auto;margin-top:4px;color:#aaa;white-space:pre-wrap"></pre>
     </div>
@@ -247,6 +256,10 @@
         <button class="btn-primary" onclick="saveAgent()">Save</button>
         <button class="btn-danger" id="agent-delete-btn" onclick="deleteAgent()" style="display:none">Delete</button>
         <button class="btn-ghost" onclick="closeAgentForm()">Cancel</button>
+      </div>
+      <div id="agent-oauth2-connections" style="display:none;margin-top:18px">
+        <label style="margin-bottom:8px">OAuth2 Connections</label>
+        <div id="agent-oauth2-list"></div>
       </div>
     </div>
   </div>
@@ -360,6 +373,9 @@ async function loadAll() {
     ]);
     renderTools(); renderSkills(); renderAgents(); renderChatAgents();
     if (currentTab === 'settings') loadApiKeys();
+    if (new URLSearchParams(location.search).get('oauth2') === 'success') {
+      toast('OAuth2 connected'); history.replaceState(null, '', '/');
+    }
   } catch(e) {
     toast('Load failed: ' + e.message, false);
   }
@@ -499,7 +515,18 @@ function showTool(name) {
   document.getElementById('td-name').textContent = t.name;
   document.getElementById('td-desc').textContent = t.description || '—';
   document.getElementById('td-endpoint').textContent = `${t.openapi_method} ${t.openapi_base_url}${t.openapi_path}`;
+  document.getElementById('td-timeout').value = t.timeout ?? '';
   document.getElementById('td-in').textContent = JSON.stringify(t.input_schema, null, 2);
+}
+
+async function saveToolTimeout() {
+  const name = document.getElementById('td-name').textContent;
+  const val = document.getElementById('td-timeout').value;
+  const timeout = val === '' ? null : parseInt(val, 10);
+  await api('PATCH', '/tools/' + encodeURIComponent(name), { timeout });
+  const t = allTools.find(x => x.name === name);
+  if (t) t.timeout = timeout;
+  toast('Timeout saved');
 }
 
 function previewImportBaseUrl() {
@@ -575,15 +602,33 @@ function closeSkillForm() {
 function renderToolCheckboxes(containerId, selected) {
   const el = document.getElementById(containerId);
   if (!allTools.length) { el.innerHTML = '<span style="color:#555;font-size:12px">No tools registered</span>'; return; }
-  el.innerHTML = allTools.map(t => `
-    <label>
-      <input type="checkbox" value="${t.name}" ${selected.includes(t.name) ? 'checked' : ''}>
-      ${t.name}
-    </label>`).join('');
+  const byNs = {};
+  allTools.forEach(t => { const ns = t.namespace || ''; (byNs[ns] = byNs[ns] || []).push(t); });
+  el.innerHTML = Object.entries(byNs).map(([ns, tools]) => `
+    <div style="margin-bottom:10px">
+      <div style="font-size:10px;font-weight:600;color:#555;text-transform:uppercase;letter-spacing:.6px;padding:4px 0;margin-bottom:6px;border-bottom:1px solid #1e1e1e">${escHtml(ns)}</div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px">
+        ${tools.map(t => `<button type="button"
+          data-tool="${escHtml(t.name)}"
+          onclick="toggleTool(this)"
+          style="padding:4px 10px;border-radius:4px;font-size:12px;cursor:pointer;border:1px solid ${selected.includes(t.name) ? '#4f7ef8' : '#2a2a2a'};background:${selected.includes(t.name) ? '#1a2240' : '#111'};color:${selected.includes(t.name) ? '#8ab4f8' : '#888'}"
+          >${escHtml(t.name.replace(ns + '.', ''))}</button>`).join('')}
+      </div>
+    </div>
+  `).join('');
+}
+
+function toggleTool(btn) {
+  const on = btn.style.borderColor !== 'rgb(79, 126, 248)';
+  btn.style.borderColor = on ? '#4f7ef8' : '#2a2a2a';
+  btn.style.background = on ? '#1a2240' : '#111';
+  btn.style.color = on ? '#8ab4f8' : '#888';
 }
 
 function getChecked(containerId) {
-  return [...document.querySelectorAll(`#${containerId} input[type=checkbox]:checked`)].map(x => x.value);
+  return [...document.querySelectorAll(`#${containerId} button[data-tool]`)]
+    .filter(b => b.style.borderColor === 'rgb(79, 126, 248)')
+    .map(b => b.dataset.tool);
 }
 
 async function saveSkill() {
@@ -672,6 +717,7 @@ function newAgent() {
   document.getElementById('agent-auth-context').value = '';
   updateModelOptions();
   document.getElementById('agent-delete-btn').style.display = 'none';
+  document.getElementById('agent-oauth2-connections').style.display = 'none';
   renderSkillCheckboxes({});
   document.getElementById('agent-form').style.display = 'block';
 }
@@ -688,11 +734,37 @@ function editAgent(name, version) {
   document.getElementById('agent-auth-context').value = a.auth_context ? JSON.stringify(a.auth_context, null, 2) : '';
   document.getElementById('agent-delete-btn').style.display = 'inline-block';
   renderSkillCheckboxes(a.skill_refs || {});
+  renderOauth2Connections(a);
   document.getElementById('agent-form').style.display = 'block';
 }
 
 function closeAgentForm() {
   document.getElementById('agent-form').style.display = 'none';
+}
+
+function renderOauth2Connections(agent) {
+  const section = document.getElementById('agent-oauth2-connections');
+  const list = document.getElementById('agent-oauth2-list');
+  const skillNames = Object.keys(agent.skill_refs || {});
+  const toolNames = new Set(
+    allSkills.filter(s => skillNames.includes(s.name)).flatMap(s => s.tool_names || [])
+  );
+  const oauth2Tools = allTools.filter(t => toolNames.has(t.name) && t.openapi_security?.authorization_url);
+  if (!oauth2Tools.length) { section.style.display = 'none'; return; }
+  // One button per unique provider (authorization_url), using first tool as representative
+  const byProvider = {};
+  oauth2Tools.forEach(t => {
+    const key = t.openapi_security.authorization_url;
+    if (!byProvider[key]) byProvider[key] = { label: t.namespace || t.name, tool: t };
+  });
+  section.style.display = 'block';
+  list.innerHTML = Object.values(byProvider).map(({ label, tool }) => {
+    const url = `/oauth2/connect?agent_id=${encodeURIComponent(agent.name)}&agent_version=${encodeURIComponent(agent.version)}&tool_name=${encodeURIComponent(tool.name)}`;
+    return `<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid #1e1e1e">
+      <span style="font-size:12px;color:#ccc">${escHtml(label)}</span>
+      <a href="${url}" style="text-decoration:none"><button class="btn-primary btn-xs">Connect</button></a>
+    </div>`;
+  }).join('');
 }
 
 function renderSkillCheckboxes(selectedRefs) {

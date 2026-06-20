@@ -21,6 +21,7 @@ class ToolRecord(BaseModel):
     openapi_path: str
     openapi_base_url: str
     openapi_security: dict | None = None
+    timeout: int | None = None
 
 
 # ── Skills ─────────────────────────────────────────────────────────────────

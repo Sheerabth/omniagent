@@ -29,6 +29,7 @@ from omniagent.worker.models import (
 logger = logging.getLogger(__name__)
 
 CONTROL_PLANE = os.environ.get("OMNIAGENT_CONTROL_PLANE", "http://localhost:8080")
+_DEFAULT_TOOL_TIMEOUT = int(os.environ.get("TOOL_EXECUTION_TIMEOUT", "30"))
 INTERNAL_KEY = os.environ.get("OMNIAGENT_INTERNAL_KEY", "")
 
 app = procrastinate.App(connector=PsycopgConnector(conninfo=os.environ.get("DATABASE_URL", "")))
@@ -108,6 +109,7 @@ async def _fetch_session_config(session_id: str) -> SessionConfig:
                     openapi_path=tool["openapi_path"],
                     openapi_base_url=tool["openapi_base_url"],
                     openapi_security=tool["openapi_security"],
+                    timeout=tool["timeout"],
                     skill_name=tool_skill_name.get(tool["name"], ""),
                 )
 
@@ -123,35 +125,48 @@ async def _fetch_session_config(session_id: str) -> SessionConfig:
     )
 
 
-_oauth_cache: dict[str, tuple[str, float]] = {}
-_oidc_discovery_cache: dict[str, str] = {}  # issuer -> token_endpoint
+_oidc_discovery_cache: dict[str, str] = {}  # ponytail: process-local, discovery docs don't change
 
 
 async def _get_oidc_token(security: dict, auth_context: dict) -> str:
-    issuer = security["issuer"].rstrip("/")
-    if issuer not in _oidc_discovery_cache:
-        resp = await _get_http_client().get(
-            f"{issuer}/.well-known/openid-configuration", timeout=10
-        )
+    discovery_url = security["openid_connect_url"]
+    if discovery_url not in _oidc_discovery_cache:
+        resp = await _get_http_client().get(discovery_url, timeout=10)
         resp.raise_for_status()
         doc = resp.json()
         if "token_endpoint" not in doc:
-            raise RuntimeError(f"OIDC discovery at {issuer} missing token_endpoint")
-        _oidc_discovery_cache[issuer] = doc["token_endpoint"]
-    token_url = _oidc_discovery_cache[issuer]
+            raise RuntimeError(f"OIDC discovery at {discovery_url} missing token_endpoint")
+        _oidc_discovery_cache[discovery_url] = doc["token_endpoint"]
+    token_url = _oidc_discovery_cache[discovery_url]
     return await _get_oauth_token({**security, "token_url": token_url}, auth_context)
 
 
 async def _get_oauth_token(security: dict, auth_context: dict) -> str:
+    # Use pre-stored token from auth code flow if present and not expired
+    stored_token = auth_context.get("access_token")
+    if stored_token:
+        expiry = auth_context.get("token_expiry")
+        if not expiry or time.time() < expiry - 30:
+            return stored_token
     try:
         client_id = auth_context[security["client_id_key"]]
         client_secret = auth_context[security["client_secret_key"]]
     except KeyError as e:
         raise RuntimeError(f"auth_context missing key: {e}") from e
     cache_key = f"{security.get('token_url', '')}:{client_id}"
-    cached = _oauth_cache.get(cache_key)
-    if cached and time.time() < cached[1] - 30:
-        return cached[0]
+
+    from omniagent.control_plane.db import get_conn
+
+    async with get_conn() as conn:
+        row = await (
+            await conn.execute(
+                "SELECT token FROM oauth_token_cache WHERE cache_key=%s AND expires_at > NOW()",
+                (cache_key,),
+            )
+        ).fetchone()
+        if row:
+            return row["token"]
+
     refresh_token = auth_context.get(security.get("refresh_token_key", "refresh_token"))
     payload: dict = {
         "client_id": client_id,
@@ -169,7 +184,16 @@ async def _get_oauth_token(security: dict, auth_context: dict) -> str:
     if "access_token" not in data:
         raise RuntimeError(f"Token response missing access_token: {data}")
     token = data["access_token"]
-    _oauth_cache[cache_key] = (token, time.time() + data.get("expires_in", 3600))
+    expires_in = data.get("expires_in", 3600)
+
+    async with get_conn() as conn:
+        await conn.execute("DELETE FROM oauth_token_cache WHERE expires_at < NOW()")
+        await conn.execute(
+            """INSERT INTO oauth_token_cache (cache_key, token, expires_at)
+               VALUES (%s, %s, NOW() + %s * INTERVAL '1 second')
+               ON CONFLICT (cache_key) DO UPDATE SET token=EXCLUDED.token, expires_at=EXCLUDED.expires_at""",
+            (cache_key, token, expires_in - 30),
+        )
     return token
 
 
@@ -197,12 +221,18 @@ async def _tool_executor(
     props = (tool.input_schema or {}).get("properties", {})
     query_params: dict[str, Any] = {}
     body_params: dict[str, Any] = {}
+    header_params: dict[str, str] = {}
+    cookie_params: dict[str, str] = {}
     for k, v in remaining.items():
         loc = props.get(k, {}).get("x-param-in")
         if loc == "body":
             body_params[k] = v
-        elif loc in ("query", "header", "cookie"):
+        elif loc == "query":
             query_params[k] = v
+        elif loc == "header":
+            header_params[k] = str(v)
+        elif loc == "cookie":
+            cookie_params[k] = str(v)
         else:
             # no annotation — fall back to method-based (tools imported before this change)
             if method in ("GET", "DELETE", "HEAD", "OPTIONS"):
@@ -212,7 +242,7 @@ async def _tool_executor(
     params = query_params or None
     json_body = body_params if body_params else None
 
-    headers: dict[str, str] = {}
+    headers: dict[str, str] = {**header_params}
     sec = tool.openapi_security
     if sec and auth_context:
         try:
@@ -238,8 +268,15 @@ async def _tool_executor(
         except KeyError as e:
             raise RuntimeError(f"auth_context missing key {e} for tool {tool_name!r}") from e
 
+    timeout = tool.timeout if tool.timeout is not None else _DEFAULT_TOOL_TIMEOUT
     resp = await _get_http_client().request(
-        method, url, params=params, json=json_body, headers=headers, timeout=35
+        method,
+        url,
+        params=params,
+        json=json_body,
+        headers=headers,
+        cookies=cookie_params or None,
+        timeout=timeout,
     )
     if resp.status_code >= 500:
         resp.raise_for_status()
@@ -288,7 +325,14 @@ def _build_system_prompt(config: SessionConfig, llm_context: dict[str, Any] | No
             for tool_name, schema in tools:
                 lines.append(f"- {tool_name}: {schema.description}")
                 if schema.input_schema:
-                    lines.append(f"  Input schema: {json.dumps(schema.input_schema)}")
+                    clean = {
+                        **schema.input_schema,
+                        "properties": {
+                            k: {pk: pv for pk, pv in v.items() if pk != "x-param-in"}
+                            for k, v in schema.input_schema.get("properties", {}).items()
+                        },
+                    }
+                    lines.append(f"  Input schema: {json.dumps(clean)}")
                 if schema.output_schema:
                     lines.append(f"  Output schema: {json.dumps(schema.output_schema)}")
 

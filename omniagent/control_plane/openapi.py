@@ -90,11 +90,13 @@ def _resolve_security(sec_reqs: list, resolved_schemes: dict) -> dict | None:
         }
     if stype == "oauth2":
         token_url = ""
-        for flow in scheme.get("flows", {}).values():
-            token_url = flow.get("tokenUrl", "")
-            if token_url:
-                break
-        return {
+        authorization_url = ""
+        for flow_name, flow in scheme.get("flows", {}).items():
+            if not token_url:
+                token_url = flow.get("tokenUrl", "")
+            if flow_name == "authorizationCode" and not authorization_url:
+                authorization_url = flow.get("authorizationUrl", "")
+        result: dict[str, Any] = {
             "type": "oauth2",
             "token_url": token_url,
             "client_id_key": "client_id",
@@ -102,10 +104,13 @@ def _resolve_security(sec_reqs: list, resolved_schemes: dict) -> dict | None:
             "refresh_token_key": "refresh_token",
             "scopes": list(sec_reqs[0].get(scheme_name, [])),
         }
+        if authorization_url:
+            result["authorization_url"] = authorization_url
+        return result
     if stype == "openIdConnect":
         return {
             "type": "oidc",
-            "issuer": scheme.get("openIdConnectUrl", ""),
+            "openid_connect_url": scheme.get("openIdConnectUrl", ""),
             "client_id_key": "client_id",
             "client_secret_key": "client_secret",
             "refresh_token_key": "refresh_token",

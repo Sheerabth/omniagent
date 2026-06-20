@@ -42,8 +42,8 @@ async def import_openapi(body: ImportOpenAPIRequest, _=Depends(require_any)) -> 
                 """
                     INSERT INTO tools
                       (name, namespace, description, input_schema, output_schema,
-                       openapi_method, openapi_path, openapi_base_url, openapi_security)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                       openapi_method, openapi_path, openapi_base_url, openapi_security, timeout)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (name) DO UPDATE
                       SET namespace        = EXCLUDED.namespace,
                           description      = EXCLUDED.description,
@@ -53,6 +53,7 @@ async def import_openapi(body: ImportOpenAPIRequest, _=Depends(require_any)) -> 
                           openapi_path     = EXCLUDED.openapi_path,
                           openapi_base_url = EXCLUDED.openapi_base_url,
                           openapi_security = EXCLUDED.openapi_security,
+                          timeout          = EXCLUDED.timeout,
                           updated_at       = NOW()
                     """,
                 (
@@ -65,10 +66,27 @@ async def import_openapi(body: ImportOpenAPIRequest, _=Depends(require_any)) -> 
                     t.openapi_path,
                     t.openapi_base_url,
                     json.dumps(t.openapi_security) if t.openapi_security else None,
+                    None,
                 ),
             )
 
     return {"imported": len(tools), "tools": [t.name for t in tools]}
+
+
+class PatchToolRequest(BaseModel):
+    timeout: int | None = None
+
+
+@router.patch("/{name}", status_code=200)
+async def patch_tool(name: str, body: PatchToolRequest, _=Depends(require_any)) -> dict:
+    async with get_conn() as conn:
+        result = await conn.execute(
+            "UPDATE tools SET timeout = %s, updated_at = NOW() WHERE name = %s",
+            (body.timeout, name),
+        )
+        if result.rowcount == 0:
+            raise HTTPException(404, detail=f"Tool {name!r} not found")
+    return {"name": name, "timeout": body.timeout}
 
 
 @router.delete("/{name}", status_code=204)

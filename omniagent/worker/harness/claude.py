@@ -89,7 +89,17 @@ def _build_mcp_server(
             McpTool(
                 name=name,
                 description=schema.description,
-                inputSchema=schema.input_schema or {"type": "object", "properties": {}},
+                inputSchema=(
+                    {
+                        **schema.input_schema,
+                        "properties": {
+                            k: {pk: pv for pk, pv in v.items() if pk != "x-param-in"}
+                            for k, v in schema.input_schema.get("properties", {}).items()
+                        },
+                    }
+                    if schema.input_schema
+                    else {"type": "object", "properties": {}}
+                ),
             )
             for name, schema in tool_snapshot.items()
         ]

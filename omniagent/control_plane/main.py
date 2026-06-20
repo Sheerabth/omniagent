@@ -9,7 +9,16 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 
 from omniagent.control_plane import db, queue
-from omniagent.control_plane.routes import agents, internal, sessions, settings, skills, sse, tools
+from omniagent.control_plane.routes import (
+    agents,
+    internal,
+    oauth2,
+    sessions,
+    settings,
+    skills,
+    sse,
+    tools,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -110,3 +119,4 @@ app.include_router(sessions.router)
 app.include_router(settings.router)
 app.include_router(internal.router)
 app.include_router(sse.router)
+app.include_router(oauth2.router)
