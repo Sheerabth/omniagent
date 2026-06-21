@@ -6,9 +6,9 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 
-from omniagent.control_plane.auth import require_scope
-from omniagent.control_plane.db import get_conn
-from omniagent.control_plane.models import (
+from omniagent.api.auth import require_scope
+from omniagent.api.db import get_conn
+from omniagent.api.models import (
     MessageRecord,
     ResumeRequest,
     RunRequest,
@@ -82,13 +82,13 @@ async def run_session(
             """
             UPDATE sessions
             SET status = 'running', messages = %s, updated_at = NOW()
-            WHERE id = %s AND status != 'running'
+            WHERE id = %s AND status IN ('idle', 'failed', 'cancelled')
             RETURNING id
             """,
             (json.dumps(messages), session_id),
         )
         if not await rows.fetchone():
-            raise HTTPException(409, detail="Session is already running")
+            raise HTTPException(409, detail="Session is busy")
 
         from omniagent.worker.job import run_agent_job
 
@@ -148,6 +148,17 @@ async def list_sessions(_=Depends(require_scope("sessions:read"))) -> list[Sessi
             "SELECT * FROM sessions WHERE is_scheduled = FALSE ORDER BY created_at DESC LIMIT 100"
         )
         return [SessionRecord.model_validate(dict(r)) for r in await rows.fetchall()]
+
+
+@router.post("/{session_id}/cancel", status_code=204)
+async def cancel_session(session_id: uuid.UUID, _=Depends(require_scope("sessions:write"))) -> None:
+    ch = "session_" + str(session_id).replace("-", "_")
+    async with get_conn() as conn:
+        await conn.execute(
+            "UPDATE sessions SET status='cancelled', updated_at=NOW() WHERE id=%s AND status IN ('running','pending','deferred')",
+            (session_id,),
+        )
+        await conn.execute("SELECT pg_notify(%s, %s)", (ch, "error"))
 
 
 @router.delete("/{session_id}", status_code=204)

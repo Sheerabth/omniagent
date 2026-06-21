@@ -2,10 +2,10 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from omniagent.control_plane.auth import require_scope
-from omniagent.control_plane.db import get_conn
-from omniagent.control_plane.models import VALID_SCOPES, ApiKeyCreate, ApiKeyRecord, ApiKeyResponse
-from omniagent.control_plane.secrets import generate_key, hash_key
+from omniagent.api.auth import require_scope
+from omniagent.api.db import get_conn
+from omniagent.api.models import VALID_SCOPES, ApiKeyCreate, ApiKeyRecord, ApiKeyResponse
+from omniagent.api.secrets import generate_key, hash_key
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 

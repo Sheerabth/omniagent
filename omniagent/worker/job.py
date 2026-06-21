@@ -15,8 +15,8 @@ import httpx
 import procrastinate
 from procrastinate import PsycopgConnector
 
-from omniagent.control_plane.crypto import decrypt_auth_context
-from omniagent.control_plane.models import MessageRecord
+from omniagent.api.crypto import decrypt_auth_context
+from omniagent.api.models import MessageRecord, ToolCallEntry
 from omniagent.worker.models import (
     BaseEvent,
     ErrorEvent,
@@ -31,9 +31,7 @@ from omniagent.worker.native import NATIVE_TOOL_DESCRIPTIONS, NATIVE_TOOL_SCHEMA
 
 logger = logging.getLogger(__name__)
 
-CONTROL_PLANE = os.environ.get("OMNIAGENT_CONTROL_PLANE", "http://localhost:8080")
 _DEFAULT_TOOL_TIMEOUT = int(os.environ.get("TOOL_EXECUTION_TIMEOUT", "30"))
-INTERNAL_KEY = os.environ.get("OMNIAGENT_INTERNAL_KEY", "")
 
 app = procrastinate.App(connector=PsycopgConnector(conninfo=os.environ.get("DATABASE_URL", "")))
 
@@ -53,13 +51,8 @@ def _get_http_client() -> httpx.AsyncClient:
     return _http_client
 
 
-def _internal_headers() -> dict[str, str]:
-    """Headers for CP-internal calls — uses INTERNAL_KEY, never shared externally."""
-    return {"X-OmniAgent-Key": INTERNAL_KEY}
-
-
 async def _fetch_session_config(session_id: str) -> SessionConfig:
-    from omniagent.control_plane.db import get_conn
+    from omniagent.api.db import get_conn
 
     async with get_conn() as conn:
         rows = await conn.execute(
@@ -179,7 +172,7 @@ async def _get_oauth_token(security: dict, auth_context: dict) -> str:
         raise RuntimeError(f"auth_context missing key: {e}") from e
     cache_key = f"{security.get('token_url', '')}:{client_id}"
 
-    from omniagent.control_plane.db import get_conn
+    from omniagent.api.db import get_conn
 
     async with get_conn() as conn:
         row = await (
@@ -312,16 +305,75 @@ async def _tool_executor(
     return resp.json()
 
 
+_CH = lambda sid: "session_" + sid.replace("-", "_")  # noqa: E731
+
+
 async def _emit_event(session_id: str, event: BaseEvent) -> None:
+    from omniagent.api.db import get_conn
+
+    ch = _CH(session_id)
     try:
-        await _get_http_client().post(
-            f"{CONTROL_PLANE}/internal/sessions/{session_id}/event",
-            json=event.model_dump(exclude_none=True),
-            headers=_internal_headers(),
-            timeout=5,
-        )
+        if event.type == "error":
+            async with get_conn() as conn:
+                await conn.execute(
+                    "UPDATE sessions SET status='failed', updated_at=NOW() WHERE id=%s AND status='running'",
+                    (session_id,),
+                )
+                await conn.execute("SELECT pg_notify(%s, %s)", (ch, "error"))
+        elif event.type == "tool_result":
+            ev = event.model_dump(exclude_none=True)
+            if ev.get("input") is not None and "output" in ev:
+                async with get_conn() as conn:
+                    rows = await conn.execute(
+                        "SELECT tool_calls FROM sessions WHERE id=%s", (session_id,)
+                    )
+                    sess = await rows.fetchone()
+                    if sess:
+                        tool_calls = sess["tool_calls"] or []
+                        tool_calls.append(
+                            ToolCallEntry(
+                                tool_name=ev.get("tool") or "",
+                                input=ev.get("input") or {},
+                                output=ev.get("output"),
+                                harness=ev.get("harness"),
+                                skill_name=ev.get("skill_name"),
+                                timestamp=datetime.now(UTC),
+                                success=ev.get("success", True),
+                                error=ev.get("error"),
+                            ).model_dump(mode="json")
+                        )
+                        await conn.execute(
+                            "UPDATE sessions SET tool_calls=%s WHERE id=%s",
+                            (json.dumps(tool_calls), session_id),
+                        )
+                        await conn.execute("SELECT pg_notify(%s, %s)", (ch, "update"))
+        else:
+            async with get_conn() as conn:
+                await conn.execute("SELECT pg_notify(%s, %s)", (ch, event.type))
     except Exception as exc:
         logger.warning("emit_event failed: %s", exc)
+
+
+async def _complete_session(session_id: str, result: str) -> None:
+    from omniagent.api.db import get_conn
+
+    ch = _CH(session_id)
+    async with get_conn() as conn:
+        rows = await conn.execute("SELECT messages FROM sessions WHERE id=%s", (session_id,))
+        sess = await rows.fetchone()
+        messages = (sess["messages"] or []) if sess else []
+        messages.append(
+            MessageRecord(
+                role="assistant",
+                content=result,
+                timestamp=datetime.now(UTC).isoformat(),
+            ).model_dump()
+        )
+        await conn.execute(
+            "UPDATE sessions SET status='idle', messages=%s, updated_at=NOW() WHERE id=%s",
+            (json.dumps(messages), session_id),
+        )
+        await conn.execute("SELECT pg_notify(%s, %s)", (ch, "complete"))
 
 
 def _safe_tool_name(name: str) -> str:
@@ -408,7 +460,7 @@ def _make_native_tool_snapshot(name: str) -> ToolSnapshot:
 
 @app.task(name="run_agent_job", queue="default")
 async def run_agent_job(session_id: str, payload: str) -> None:
-    from omniagent.control_plane.db import get_conn
+    from omniagent.api.db import get_conn
 
     data = json.loads(payload)
     history = [MessageRecord.model_validate(m) for m in data.get("history", [])]
@@ -455,7 +507,7 @@ async def run_agent_job(session_id: str, payload: str) -> None:
             "native.memory_delete",
             "native.memory_list",
         ):
-            from omniagent.control_plane.db import get_conn
+            from omniagent.api.db import get_conn
 
             await _emit_event(
                 session_id,
@@ -509,7 +561,7 @@ async def run_agent_job(session_id: str, payload: str) -> None:
             return result
 
         if tool_name == "native.schedule_list":
-            from omniagent.control_plane.db import get_conn
+            from omniagent.api.db import get_conn
 
             await _emit_event(
                 session_id,
@@ -548,7 +600,7 @@ async def run_agent_job(session_id: str, payload: str) -> None:
         if tool_name == "native.schedule_create":
             from croniter import croniter as _croniter
 
-            from omniagent.control_plane.db import get_conn
+            from omniagent.api.db import get_conn
 
             cron_expr = input_data.get("cron_expr", "")
             prompt = input_data.get("prompt", "")
@@ -588,7 +640,7 @@ async def run_agent_job(session_id: str, payload: str) -> None:
         if tool_name == "native.schedule_update":
             from croniter import croniter as _croniter
 
-            from omniagent.control_plane.db import get_conn
+            from omniagent.api.db import get_conn
 
             schedule_id = input_data.get("schedule_id")
             cron_expr = input_data.get("cron_expr")
@@ -638,7 +690,7 @@ async def run_agent_job(session_id: str, payload: str) -> None:
             return result
 
         if tool_name == "native.schedule_delete":
-            from omniagent.control_plane.db import get_conn
+            from omniagent.api.db import get_conn
 
             schedule_id = input_data.get("schedule_id")
             await _emit_event(
@@ -781,12 +833,7 @@ async def run_agent_job(session_id: str, payload: str) -> None:
         if defer := _defer_state.get("info"):
             await _handle_defer(session_id, result, history, data, defer)
         else:
-            await _get_http_client().post(
-                f"{CONTROL_PLANE}/internal/sessions/{session_id}/result",
-                json={"result": result},
-                headers=_internal_headers(),
-                timeout=10,
-            )
+            await _complete_session(session_id, result)
 
     except Exception as exc:
         logger.exception("run_agent_job failed for session %s", session_id)
@@ -802,7 +849,7 @@ async def _handle_defer(
     defer: DeferInfo,
 ) -> None:
     """Save deferred state and schedule next turn."""
-    from omniagent.control_plane.db import get_conn
+    from omniagent.api.db import get_conn
 
     now = datetime.now(UTC).isoformat()
     new_history = list(history)

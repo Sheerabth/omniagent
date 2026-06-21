@@ -4,10 +4,10 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from omniagent.control_plane.auth import require_scope
-from omniagent.control_plane.crypto import encrypt_auth_context
-from omniagent.control_plane.db import get_conn
-from omniagent.control_plane.models import ScheduleCreate, ScheduleRecord, ScheduleUpdate
+from omniagent.api.auth import require_scope
+from omniagent.api.crypto import encrypt_auth_context
+from omniagent.api.db import get_conn
+from omniagent.api.models import ScheduleCreate, ScheduleRecord, ScheduleUpdate
 
 router = APIRouter(prefix="/schedules", tags=["schedules"])
 
@@ -56,7 +56,7 @@ async def list_schedules(_=Depends(require_scope("agents:read"))) -> list[Schedu
 
 @router.get("/orphaned-runs", response_model=list)
 async def list_orphaned_runs(_=Depends(require_scope("agents:read"))) -> list:
-    from omniagent.control_plane.models import SessionRecord
+    from omniagent.api.models import SessionRecord
 
     async with get_conn() as conn:
         rows = await conn.execute(
@@ -125,7 +125,7 @@ async def update_schedule(
 async def list_schedule_runs(
     schedule_id: uuid.UUID, _=Depends(require_scope("agents:read"))
 ) -> list:
-    from omniagent.control_plane.models import SessionRecord
+    from omniagent.api.models import SessionRecord
 
     async with get_conn() as conn:
         rows = await conn.execute(

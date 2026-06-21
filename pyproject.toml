@@ -39,7 +39,7 @@ dev = [
 ]
 
 [project.scripts]
-omniagent-server = "omniagent.control_plane.main:app"
+omniagent-server = "omniagent.api.main:app"
 omniagent-worker = "omniagent.worker.__main__:main"
 
 [build-system]

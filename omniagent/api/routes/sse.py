@@ -11,8 +11,8 @@ import psycopg
 from fastapi import APIRouter, Depends, HTTPException
 from sse_starlette.sse import EventSourceResponse
 
-from omniagent.control_plane.auth import require_scope
-from omniagent.control_plane.db import get_conn
+from omniagent.api.auth import require_scope
+from omniagent.api.db import get_conn
 
 logger = logging.getLogger(__name__)
 
@@ -44,8 +44,8 @@ async def stream_session(
                     )
                     current = await rows.fetchone()
 
-                if current and current["status"] in ("complete", "failed"):
-                    ntype = "complete" if current["status"] == "complete" else "error"
+                if current and current["status"] in ("idle", "failed"):
+                    ntype = "complete" if current["status"] == "idle" else "error"
                     yield {"data": json.dumps({"type": ntype})}
                     return
 

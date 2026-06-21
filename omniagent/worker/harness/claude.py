@@ -17,7 +17,7 @@ from mcp.server import Server
 from mcp.types import TextContent
 from mcp.types import Tool as McpTool
 
-from omniagent.control_plane.models import MessageRecord
+from omniagent.api.models import MessageRecord
 from omniagent.worker.harness.base import (
     EXECUTE_PYTHON_DESCRIPTION,
     HarnessAdapter,

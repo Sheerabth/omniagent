@@ -16,8 +16,8 @@ async def main() -> None:
 
     from procrastinate.worker import Worker
 
-    from omniagent.control_plane.db import close_pool, init_pool
-    from omniagent.control_plane.migrations import run_migrations
+    from omniagent.api.db import close_pool, init_pool
+    from omniagent.api.migrations import run_migrations
     from omniagent.worker.job import app, run_agent_job  # noqa: F401 — registers task
     from omniagent.worker.scheduler import check_schedules  # noqa: F401 — registers periodic task
 

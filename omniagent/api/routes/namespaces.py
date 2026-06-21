@@ -2,10 +2,10 @@
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from omniagent.control_plane.auth import require_scope
-from omniagent.control_plane.crypto import decrypt_auth_context, encrypt_auth_context
-from omniagent.control_plane.db import get_conn
-from omniagent.control_plane.models import NamespaceAuthSet, NamespaceRecord
+from omniagent.api.auth import require_scope
+from omniagent.api.crypto import decrypt_auth_context, encrypt_auth_context
+from omniagent.api.db import get_conn
+from omniagent.api.models import NamespaceAuthSet, NamespaceRecord
 
 router = APIRouter(prefix="/namespaces", tags=["namespaces"])
 
@@ -40,7 +40,7 @@ async def list_namespaces(_=Depends(require_scope("tools:read"))) -> list[Namesp
         ]
 
 
-@router.put("/{namespace}/auth", response_model=NamespaceRecord)
+@router.put("/auth/{namespace}", response_model=NamespaceRecord)
 async def set_namespace_auth(
     namespace: str, body: NamespaceAuthSet, _=Depends(require_scope("tools:write"))
 ) -> NamespaceRecord:
@@ -72,7 +72,7 @@ async def set_namespace_auth(
         )
 
 
-@router.delete("/{namespace}/auth", status_code=204)
+@router.delete("/auth/{namespace}", status_code=204)
 async def clear_namespace_auth(namespace: str, _=Depends(require_scope("tools:write"))) -> None:
     async with get_conn() as conn:
         await conn.execute("DELETE FROM namespace_auth WHERE namespace=%s", (namespace,))

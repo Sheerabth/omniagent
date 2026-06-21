@@ -140,7 +140,7 @@ cp .env.example .env
 ### 4. Start the control plane
 
 ```bash
-uv run uvicorn omniagent.control_plane.main:app --host 0.0.0.0 --port 8080
+uv run uvicorn omniagent.api.main:app --host 0.0.0.0 --port 8080
 ```
 
 API docs at `http://localhost:8080/docs`. UI at `http://localhost:8080/`.

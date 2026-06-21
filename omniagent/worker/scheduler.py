@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 async def check_schedules(timestamp: int) -> None:
     from croniter import croniter
 
-    from omniagent.control_plane.db import get_conn
+    from omniagent.api.db import get_conn
 
     async with get_conn() as conn:
         rows = await conn.execute(
@@ -41,7 +41,7 @@ async def check_schedules(timestamp: int) -> None:
 
 
 async def _fire_schedule(sched: dict) -> None:
-    from omniagent.control_plane.db import get_conn
+    from omniagent.api.db import get_conn
 
     async with get_conn() as conn:
         rows = await conn.execute(

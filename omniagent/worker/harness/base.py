@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from omniagent.control_plane.models import MessageRecord
+from omniagent.api.models import MessageRecord
 from omniagent.worker.models import BaseEvent, ToolCallEvent, ToolResultEvent, ToolSnapshot
 
 EXECUTE_PYTHON_DESCRIPTION = (

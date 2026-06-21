@@ -108,17 +108,22 @@
   .sess-item .sess-id { font-family: monospace; font-size: 10px; color: #555; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .sess-item .sess-status { font-size: 10px; padding: 1px 6px; border-radius: 3px; }
   .sess-item .sess-status.running { color: #6fcf6f; background: #1a2a1a; }
-  .sess-item .sess-status.complete { color: #8ab4f8; background: #1a2040; }
+  .sess-item .sess-status.idle { color: #8ab4f8; background: #1a2040; }
+  .sess-item .sess-status.pending { color: #a0c4ff; background: #141e30; }
+  .sess-item .sess-status.deferred { color: #f0c040; background: #2a2010; }
   .sess-item .sess-status.failed { color: #f87171; background: #2a1010; }
+  .sess-item .sess-status.cancelled { color: #888; background: #1e1e1e; }
   .sess-delete { font-size: 10px; color: #555; cursor: pointer; padding: 2px 4px; }
   .sess-delete:hover { color: #f87171; }
   .run-item { padding: 8px 12px; border-bottom: 1px solid #171717; font-size: 12px; cursor: pointer; display: flex; align-items: center; gap: 8px; }
   .run-item:hover { background: #1a1a1a; }
   .run-status { font-size: 10px; padding: 1px 6px; border-radius: 3px; flex-shrink: 0; }
   .run-status.running { color: #6fcf6f; background: #1a2a1a; }
-  .run-status.complete { color: #8ab4f8; background: #1a2040; }
+  .run-status.idle { color: #8ab4f8; background: #1a2040; }
+  .run-status.pending { color: #a0c4ff; background: #141e30; }
   .run-status.failed { color: #f87171; background: #2a1010; }
   .run-status.deferred { color: #f0c040; background: #2a2010; }
+  .run-status.cancelled { color: #888; background: #1e1e1e; }
   .sched-item .sub2 { color: #4a9a4a; font-size: 11px; margin-top: 1px; }
   .stool { border-bottom: 1px solid #171717; padding: 10px 12px; font-size: 12px; }
   .stool-skill-header { padding: 6px 12px 3px; font-size: 10px; font-weight: 600; color: #666; text-transform: uppercase; letter-spacing: 0.5px; border-top: 1px solid #1e1e1e; margin-top: 4px; }
@@ -286,6 +291,19 @@
         <button class="btn-danger" id="agent-delete-btn" onclick="deleteAgent()" style="display:none">Delete</button>
         <button class="btn-ghost" onclick="closeAgentForm()">Cancel</button>
       </div>
+      <div id="agent-memory-section" style="display:none;margin-top:16px;border-top:1px solid #222;padding-top:14px">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+          <label style="margin:0;font-weight:600">Memory</label>
+          <button class="btn-ghost" style="font-size:11px;padding:2px 8px" onclick="loadAgentMemory()">Refresh</button>
+          <button class="btn-danger" style="font-size:11px;padding:2px 8px" onclick="clearAgentMemory()">Clear all</button>
+        </div>
+        <div id="agent-memory-list"></div>
+        <div style="display:flex;gap:6px;margin-top:8px">
+          <input type="text" id="mem-key-input" placeholder="key" style="flex:1">
+          <input type="text" id="mem-val-input" placeholder="value (JSON)" style="flex:2">
+          <button class="btn-primary" style="font-size:11px;padding:4px 10px" onclick="setAgentMemoryKey()">Set</button>
+        </div>
+      </div>
     </div>
   </div>
 </div>
@@ -313,6 +331,7 @@
   </div>
   <div id="chat-input-row">
     <textarea id="chat-input" placeholder="Type a message…" onkeydown="chatKeydown(event)" rows="1"></textarea>
+    <button id="chat-stop" onclick="chatStop()" style="display:none;background:#c0392b;color:#fff">Stop</button>
     <button id="chat-send" onclick="chatSend()" disabled>Send</button>
   </div>
 </div>
@@ -644,7 +663,7 @@ async function saveNamespaceAuth() {
   const auth_context = buildAuthContextFrom('ns-auth-fields');
   if (!auth_context) { toast('No auth values entered', false); return; }
   try {
-    await api('PUT', `/namespaces/${encodeURIComponent(currentNamespace)}/auth`, { auth_context });
+    await api('PUT', `/namespaces/auth/${encodeURIComponent(currentNamespace)}`, { auth_context });
     toast('Auth saved');
     allNamespaces = await api('GET', '/namespaces');
     renderNamespaces();
@@ -655,7 +674,7 @@ async function saveNamespaceAuth() {
 async function clearNamespaceAuth() {
   if (!confirm(`Clear auth for "${currentNamespace}"?`)) return;
   try {
-    await api('DELETE', `/namespaces/${encodeURIComponent(currentNamespace)}/auth`);
+    await api('DELETE', `/namespaces/auth/${encodeURIComponent(currentNamespace)}`);
     toast('Auth cleared');
     allNamespaces = await api('GET', '/namespaces');
     renderNamespaces();
@@ -685,7 +704,7 @@ async function deleteNamespace(ns) {
   if (!confirm(`Delete all tools in namespace "${ns}"?`)) return;
   try {
     await api('DELETE', '/tools/namespace/' + encodeURIComponent(ns));
-    await api('DELETE', '/namespaces/' + encodeURIComponent(ns) + '/auth').catch(() => {});
+    await api('DELETE', '/namespaces/auth/' + encodeURIComponent(ns)).catch(() => {});
     toast('Namespace deleted');
     currentNamespace = null;
     await loadAll();
@@ -836,7 +855,7 @@ async function saveToolbox() {
   try {
     await api('POST', '/toolboxes', body);
     toast('Toolbox saved');
-    closeSkillForm();
+    closeToolboxForm();
     await loadAll();
   } catch(e) { toast(e.message, false); }
 }
@@ -848,7 +867,7 @@ async function deleteToolbox() {
   try {
     await api('DELETE', `/toolboxes/${encodeURIComponent(name)}/${encodeURIComponent(version)}`);
     toast('Toolbox deleted');
-    closeSkillForm();
+    closeToolboxForm();
     await loadAll();
   } catch(e) { toast(e.message, false); }
 }
@@ -902,6 +921,7 @@ function newAgent() {
   document.getElementById('agent-monty').checked = false;
   updateModelOptions();
   document.getElementById('agent-delete-btn').style.display = 'none';
+  document.getElementById('agent-memory-section').style.display = 'none';
   renderToolboxCheckboxes({});
   renderDirectToolCheckboxes([]);
   document.getElementById('agent-form').style.display = 'block';
@@ -919,11 +939,59 @@ function editAgent(name, version) {
   document.getElementById('agent-delete-btn').style.display = 'inline-block';
   renderToolboxCheckboxes(a.toolbox_refs || {});
   renderDirectToolCheckboxes(a.tool_refs || []);
+  document.getElementById('agent-memory-section').style.display = 'block';
+  loadAgentMemory(name);
   document.getElementById('agent-form').style.display = 'block';
+}
+
+let _memAgentName = null;
+
+async function loadAgentMemory(name) {
+  _memAgentName = name || _memAgentName;
+  if (!_memAgentName) return;
+  const list = await api('GET', '/memory/' + _memAgentName).catch(() => []);
+  renderMemory(list);
+}
+
+function renderMemory(list) {
+  const el = document.getElementById('agent-memory-list');
+  if (!list.length) { el.innerHTML = '<div style="color:#666;font-size:12px">No memory entries.</div>'; return; }
+  el.innerHTML = list.map(({key, value}) =>
+    `<div style="display:flex;gap:6px;align-items:center;margin-bottom:4px">
+      <code style="flex:1;font-size:12px;color:#aaa">${escHtml(key)}</code>
+      <span style="flex:2;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(JSON.stringify(value))}</span>
+      <button class="btn-ghost" style="font-size:11px;padding:2px 6px" onclick="deleteMemoryKey('${escHtml(key)}')">✕</button>
+    </div>`
+  ).join('');
+}
+
+async function deleteMemoryKey(key) {
+  await api('DELETE', '/memory/' + _memAgentName + '/' + encodeURIComponent(key));
+  loadAgentMemory();
+}
+
+async function clearAgentMemory() {
+  if (!confirm('Clear all memory for ' + _memAgentName + '?')) return;
+  await api('DELETE', '/memory/' + _memAgentName);
+  loadAgentMemory();
+}
+
+async function setAgentMemoryKey() {
+  const key = document.getElementById('mem-key-input').value.trim();
+  const rawVal = document.getElementById('mem-val-input').value.trim();
+  if (!key || !_memAgentName) return;
+  let value;
+  try { value = JSON.parse(rawVal); } catch { value = rawVal; }
+  await api('PUT', '/memory/' + _memAgentName + '/' + encodeURIComponent(key), { value });
+  document.getElementById('mem-key-input').value = '';
+  document.getElementById('mem-val-input').value = '';
+  loadAgentMemory();
 }
 
 function closeAgentForm() {
   document.getElementById('agent-form').style.display = 'none';
+  document.getElementById('agent-memory-section').style.display = 'none';
+  _memAgentName = null;
 }
 
 function renderAuthFields(containerId, toolNames, existingAuth, authContextKeys = []) {
@@ -1060,6 +1128,16 @@ async function deleteAgent() {
 let chatSessionId = null;
 let chatSSE = null;
 let chatBusy = false;
+let chatDeferred = false;
+let pendingMessage = null;
+function setChatBusy(v) {
+  chatBusy = v;
+  document.getElementById('chat-stop').style.display = v ? 'inline-block' : 'none';
+}
+async function chatStop() {
+  if (!chatSessionId) return;
+  try { await api('POST', '/sessions/' + chatSessionId + '/cancel'); } catch(_) {}
+}
 let thinkingEl = null;
 let chatRunId = 0;
 
@@ -1071,7 +1149,7 @@ function renderChatAgents() {
       const val = JSON.stringify({n: a.name, v: a.version});
       return `<option value='${val}' ${val===cur?'selected':''}>${escHtml(a.name)} (${escHtml(a.version)}) · ${a.harness}</option>`;
     }).join('');
-  document.getElementById('chat-send').disabled = !chatSessionId || chatBusy;
+  document.getElementById('chat-send').disabled = !chatSessionId;
 }
 
 function chatAgentChanged() {
@@ -1120,10 +1198,11 @@ async function switchToSession(id) {
     (status.messages || []).filter(m => !m.content?.startsWith('[RESUME')).forEach(m => appendMsg(m.role, m.content));
     renderSidebar(status.tool_calls || []);
     if (status.status === 'running') {
-      chatBusy = true;
-      document.getElementById('chat-send').disabled = true;
+      setChatBusy(true);
       thinkingEl = appendThinking();
       streamSession(id);
+    } else if (status.status === 'deferred') {
+      chatDeferred = true;
     }
   } catch(e) { toast('Load failed: ' + e.message, false); }
   renderSessions();
@@ -1154,7 +1233,7 @@ async function chatNewSession() {
   const {n: agentName, v: agentVersion} = JSON.parse(raw);
   chatSSE && chatSSE.close();
   chatSSE = null;
-  chatBusy = false;
+  setChatBusy(false);
   document.getElementById('chat-messages').innerHTML = '';
   document.getElementById('chat-sidebar-items').innerHTML = '';
   try {
@@ -1174,16 +1253,37 @@ function chatKeydown(e) {
 async function chatSend() {
   const input = document.getElementById('chat-input');
   const text = input.value.trim();
-  if (!text || !chatSessionId || chatBusy) return;
+  if (!text || !chatSessionId) return;
 
   input.value = '';
-  chatBusy = true;
-  document.getElementById('chat-send').disabled = true;
+
+  if (chatBusy) {
+    pendingMessage = text;
+    appendMsg('user', text + ' ⏳');
+    return;
+  }
 
   appendMsg('user', text);
   chatRunId++;
   thinkingEl = appendThinking();
 
+  if (chatDeferred) {
+    chatDeferred = false;
+    setChatBusy(true);
+    try {
+      await api('POST', '/sessions/' + chatSessionId + '/resume', { message: text });
+      const s = allSessions.find(s => s.id === chatSessionId);
+      if (s) { s.status = 'running'; renderSessions(); }
+    } catch(e) {
+      removeThinking();
+      appendMsg('assistant', '⚠ ' + e.message);
+      setChatBusy(false);
+      chatDeferred = true;
+    }
+    return;
+  }
+
+  setChatBusy(true);
   try {
     await api('POST', '/sessions/' + chatSessionId + '/run', { prompt: text });
     const s = allSessions.find(s => s.id === chatSessionId);
@@ -1192,8 +1292,7 @@ async function chatSend() {
   } catch(e) {
     removeThinking();
     appendMsg('assistant', '⚠ ' + e.message);
-    chatBusy = false;
-    document.getElementById('chat-send').disabled = false;
+    setChatBusy(false);
   }
 }
 
@@ -1247,32 +1346,41 @@ function streamSession(sessionId) {
       _patchSessionStatus(sessionId, 'running');
     } else if (ev.type === 'deferred') {
       _patchSessionStatus(sessionId, 'deferred');
+      chatDeferred = true;
+      setChatBusy(false);
+      removeThinking();
       try {
         const status = await api('GET', '/sessions/' + sessionId + '/status');
         renderSidebar(status.tool_calls || []);
         document.getElementById('chat-messages').innerHTML = '';
         (status.messages || []).filter(m => !m.content?.startsWith('[RESUME')).forEach(m => appendMsg(m.role, m.content));
-        thinkingEl = appendThinking();
       } catch(_) {}
     } else if (ev.type === 'complete') {
       removeThinking();
       chatSSE.close();
-      chatBusy = false;
-      document.getElementById('chat-send').disabled = false;
-      _patchSessionStatus(sessionId, 'complete');
+      setChatBusy(false);
+      chatDeferred = false;
+      _patchSessionStatus(sessionId, 'idle');
       try {
         const status = await api('GET', '/sessions/' + sessionId + '/status');
         renderSidebar(status.tool_calls || []);
         document.getElementById('chat-messages').innerHTML = '';
         (status.messages || []).filter(m => !m.content?.startsWith('[RESUME')).forEach(m => appendMsg(m.role, m.content));
       } catch(_) { appendMsg('assistant', '⚠ could not fetch result'); }
+      if (pendingMessage) {
+        const msg = pendingMessage;
+        pendingMessage = null;
+        document.getElementById('chat-input').value = msg;
+        chatSend();
+      }
     } else if (ev.type === 'error') {
       removeThinking();
       chatSSE.close();
-      chatBusy = false;
-      document.getElementById('chat-send').disabled = false;
+      setChatBusy(false);
+      chatDeferred = false;
       _patchSessionStatus(sessionId, 'failed');
       appendMsg('assistant', '⚠ ' + (ev.reason || 'session failed'));
+      if (pendingMessage) { pendingMessage = null; }
     }
   };
 
@@ -1280,8 +1388,9 @@ function streamSession(sessionId) {
     removeThinking();
     appendMsg('assistant', '⚠ Connection lost. Session may still be running.');
     chatSSE.close();
-    chatBusy = false;
-    document.getElementById('chat-send').disabled = false;
+    setChatBusy(false);
+    chatDeferred = false;
+    pendingMessage = null;
   };
 }
 

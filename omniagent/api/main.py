@@ -6,12 +6,12 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 
-from omniagent.control_plane import db, queue
-from omniagent.control_plane.routes import (
+from omniagent.api import db, queue
+from omniagent.api.routes import (
     agents,
-    internal,
+    memory,
     namespaces,
     oauth2,
     schedules,
@@ -31,7 +31,7 @@ _UI_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "ui")
 async def _seed_builtin_ui_key() -> str:
     """Ensure a fixed API key exists for the built-in UI. Uses OMNIAGENT_API_KEY
     from env (stable across restarts). Upserts so the table doesn't grow."""
-    from omniagent.control_plane.secrets import generate_key, hash_key
+    from omniagent.api.secrets import generate_key, hash_key
 
     api_key = os.environ.get("OMNIAGENT_API_KEY") or generate_key()
     key_hash = hash_key(api_key)
@@ -60,7 +60,9 @@ async def _mark_session_failed(session_id: str) -> None:
             "UPDATE sessions SET status='failed', updated_at=NOW() WHERE id=%s AND status='running'",
             (sid,),
         )
-    await internal._notify(sid, "error")
+    ch = "session_" + str(sid).replace("-", "_")
+    async with db.get_conn() as conn:
+        await conn.execute("SELECT pg_notify(%s, %s)", (ch, "error"))
 
 
 async def _reconcile_stuck_sessions() -> None:
@@ -91,7 +93,7 @@ async def _reconcile_stuck_sessions() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    from omniagent.control_plane.migrations import run_migrations
+    from omniagent.api.migrations import run_migrations
     from omniagent.worker.job import app as proc_app
 
     dsn = os.environ.get("DATABASE_URL", "")
@@ -110,6 +112,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(title="OmniAgent Control Plane", lifespan=lifespan)
 
 
+@app.get("/health", include_in_schema=False)
+async def health() -> JSONResponse:
+    try:
+        async with db.get_conn() as conn:
+            await conn.execute("SELECT 1")
+        return JSONResponse({"status": "ok", "db": "ok"})
+    except Exception as e:
+        return JSONResponse({"status": "error", "db": str(e)}, status_code=503)
+
+
 @app.get("/", include_in_schema=False)
 async def ui(request: Request) -> HTMLResponse:
     path = os.path.join(_UI_DIR, "index.html")
@@ -124,9 +136,9 @@ app.include_router(tools.router)
 app.include_router(namespaces.router)
 app.include_router(toolboxes.router)
 app.include_router(agents.router)
+app.include_router(memory.router)
 app.include_router(sessions.router)
 app.include_router(schedules.router)
 app.include_router(settings.router)
-app.include_router(internal.router)
 app.include_router(sse.router)
 app.include_router(oauth2.router)

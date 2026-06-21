@@ -1,9 +1,9 @@
 import psycopg
 from fastapi import APIRouter, Depends, HTTPException
 
-from omniagent.control_plane.auth import require_scope
-from omniagent.control_plane.db import get_conn
-from omniagent.control_plane.models import ToolboxCreate, ToolboxRecord
+from omniagent.api.auth import require_scope
+from omniagent.api.db import get_conn
+from omniagent.api.models import ToolboxCreate, ToolboxRecord
 
 router = APIRouter(prefix="/toolboxes", tags=["toolboxes"])
 

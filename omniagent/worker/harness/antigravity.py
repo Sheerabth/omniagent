@@ -17,7 +17,7 @@ except ImportError as exc:
         "Verify LocalAgentConfig and policy import paths for the installed package version."
     ) from exc
 
-from omniagent.control_plane.models import MessageRecord
+from omniagent.api.models import MessageRecord
 from omniagent.worker.harness.base import HarnessAdapter, make_monty_executor
 from omniagent.worker.models import BaseEvent, ThinkingEvent, ToolSnapshot
 
