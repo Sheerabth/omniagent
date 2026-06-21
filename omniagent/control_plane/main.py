@@ -12,12 +12,13 @@ from omniagent.control_plane import db, queue
 from omniagent.control_plane.routes import (
     agents,
     internal,
+    namespaces,
     oauth2,
     schedules,
     sessions,
     settings,
-    skills,
     sse,
+    toolboxes,
     tools,
 )
 
@@ -70,10 +71,16 @@ async def _reconcile_stuck_sessions() -> None:
             logger.info("reconcile: another instance holds lock, skipping")
             return
         try:
-            rows = await conn.execute("SELECT id FROM sessions WHERE status = 'running'")
+            rows = await conn.execute(
+                "SELECT id, status FROM sessions WHERE status IN ('running', 'pending')"
+            )
             stuck = await rows.fetchall()
             for row in stuck:
-                logger.warning("reconcile: marking stuck session %s as failed", row["id"])
+                logger.warning(
+                    "reconcile: marking stuck session %s (was %s) as failed",
+                    row["id"],
+                    row["status"],
+                )
                 await conn.execute(
                     "UPDATE sessions SET status='failed', updated_at=NOW() WHERE id=%s",
                     (row["id"],),
@@ -114,7 +121,8 @@ async def ui(request: Request) -> HTMLResponse:
 
 
 app.include_router(tools.router)
-app.include_router(skills.router)
+app.include_router(namespaces.router)
+app.include_router(toolboxes.router)
 app.include_router(agents.router)
 app.include_router(sessions.router)
 app.include_router(schedules.router)

@@ -17,28 +17,24 @@ router = APIRouter(prefix="/oauth2", tags=["oauth2"])
 
 @router.get("/connect")
 async def oauth2_connect(
-    agent_id: str,
-    agent_version: str,
+    namespace: str,
     tool_name: str,
     request: Request,
 ) -> RedirectResponse:
     async with get_conn() as conn:
-        row = await (
+        auth_row = await (
             await conn.execute(
-                "SELECT auth_context FROM agents WHERE name=%s AND version=%s",
-                (agent_id, agent_version),
+                "SELECT auth_context FROM namespace_auth WHERE namespace=%s", (namespace,)
             )
         ).fetchone()
-        if not row:
-            raise HTTPException(404, "Agent not found")
-        auth_ctx: dict = decrypt_auth_context(row["auth_context"]) or {}
+        auth_ctx: dict = decrypt_auth_context(auth_row["auth_context"]) if auth_row else {}
 
-        row = await (
+        tool_row = await (
             await conn.execute("SELECT openapi_security FROM tools WHERE name=%s", (tool_name,))
         ).fetchone()
-        if not row:
+        if not tool_row:
             raise HTTPException(404, "Tool not found")
-        sec: dict = row["openapi_security"] or {}
+        sec: dict = tool_row["openapi_security"] or {}
 
         if sec.get("type") != "oauth2" or not sec.get("authorization_url"):
             raise HTTPException(400, "Tool has no OAuth2 authorization code flow")
@@ -48,23 +44,20 @@ async def oauth2_connect(
         if not client_id:
             raise HTTPException(
                 400,
-                f"Agent auth_context missing '{client_id_key}' — set client_id and client_secret before connecting",
+                f"Namespace auth missing '{client_id_key}' — set client_id and client_secret before connecting",
             )
 
         state = secrets.token_urlsafe(16)
         redirect_uri = str(request.base_url).rstrip("/") + "/oauth2/callback"
         expires_at = datetime.now(UTC) + timedelta(minutes=10)
-        await conn.execute(
-            "DELETE FROM oauth2_pending WHERE expires_at < NOW()",  # cleanup expired
-        )
+        await conn.execute("DELETE FROM oauth2_pending WHERE expires_at < NOW()")
         await conn.execute(
             "INSERT INTO oauth2_pending (state, data, expires_at) VALUES (%s, %s, %s)",
             (
                 state,
                 json.dumps(
                     {
-                        "agent_id": agent_id,
-                        "agent_version": agent_version,
+                        "namespace": namespace,
                         "security": sec,
                         "auth_ctx": auth_ctx,
                         "redirect_uri": redirect_uri,
@@ -135,8 +128,11 @@ async def oauth2_callback(code: str, state: str) -> RedirectResponse:
 
     async with get_conn() as conn:
         await conn.execute(
-            "UPDATE agents SET auth_context=%s, updated_at=NOW() WHERE name=%s AND version=%s",
-            (encrypt_auth_context(new_ctx), entry["agent_id"], entry["agent_version"]),
+            """INSERT INTO namespace_auth (namespace, auth_context, updated_at)
+               VALUES (%s, %s, NOW())
+               ON CONFLICT (namespace) DO UPDATE
+                 SET auth_context = EXCLUDED.auth_context, updated_at = NOW()""",
+            (entry["namespace"], encrypt_auth_context(new_ctx)),
         )
 
     return RedirectResponse("/?oauth2=success")

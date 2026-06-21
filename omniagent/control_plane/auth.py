@@ -9,7 +9,7 @@ Built-in UI key is seeded as `_built-in-ui` in api_keys on startup from OMNIAGEN
 Key prefix (first 8 chars) is stored alongside hash to avoid O(n) argon2 scan.
 
 Scopes: each api key has a list of scopes. `admin` is a wildcard for all scopes.
-  tools:read, tools:write, skills:read, skills:write,
+  tools:read, tools:write, toolboxes:read, toolboxes:write,
   agents:read, agents:write, sessions:read, sessions:write, keys:manage
 """
 

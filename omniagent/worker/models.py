@@ -18,13 +18,12 @@ class ToolSnapshot(BaseModel):
     openapi_security: dict | None = None
     timeout: int | None = None
     skill_name: str = ""
+    auth_context: Any = None
     is_native: bool = False  # native tools are handled before the HTTP executor
 
 
-class SkillSnapshot(BaseModel):
+class ToolboxSnapshot(BaseModel):
     system_prompt: str = ""
-    instructions: str = ""
-    skill_context: Any = None
 
 
 class SessionConfig(BaseModel):
@@ -33,8 +32,7 @@ class SessionConfig(BaseModel):
     model: str
     system_prompt: str
     use_monty: bool
-    auth_context: Any = None
-    skills: list[SkillSnapshot]
+    toolboxes: list[ToolboxSnapshot]
     tool_snapshot: dict[str, ToolSnapshot]
 
 

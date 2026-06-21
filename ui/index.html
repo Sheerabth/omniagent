@@ -148,7 +148,7 @@
 
 <div class="tabs">
   <button class="tab active" onclick="switchTab('tools')">Tools</button>
-  <button class="tab" onclick="switchTab('skills')">Skills</button>
+  <button class="tab" onclick="switchTab('toolboxes')">Toolboxes</button>
   <button class="tab" onclick="switchTab('agents')">Agents</button>
   <button class="tab" onclick="switchTab('chat')">Chat</button>
   <button class="tab" onclick="switchTab('schedules')">Schedules</button>
@@ -159,26 +159,43 @@
 <div id="panel-tools" class="panel active">
   <div class="list-col">
     <button class="new-btn btn-ghost" onclick="showImportPanel()">+ Import OpenAPI</button>
-    <h2>Registered Tools</h2>
-    <div id="tools-list"><p class="empty">Loading…</p></div>
+    <h2>Namespaces</h2>
+    <div id="namespace-list"><p class="empty">Loading…</p></div>
+    <div id="ns-tools-sidebar-wrap" style="display:none">
+      <h2 id="ns-tools-sidebar-header" style="margin-top:16px"></h2>
+      <div id="ns-tools-sidebar"></div>
+    </div>
   </div>
   <div class="form-col">
-    <div id="tool-detail" class="card" style="display:none">
-      <div style="display:flex;justify-content:space-between;align-items:center">
-        <h2 id="td-name" style="margin:0"></h2>
-        <button class="btn-danger" onclick="deleteTool(document.getElementById('td-name').textContent)">Delete</button>
+    <div id="namespace-panel" class="card" style="display:none">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+        <h2 id="ns-panel-name" style="margin:0"></h2>
+        <button class="btn-danger btn-xs" onclick="deleteNamespace(currentNamespace)">Delete</button>
       </div>
-      <label>Description</label>
-      <p id="td-desc" style="font-size:13px;color:#ccc;margin-top:4px"></p>
-      <label>Endpoint</label>
-      <p id="td-endpoint" style="font-size:12px;color:#8ab4f8;font-family:monospace;margin-top:4px"></p>
-      <div style="display:flex;align-items:center;gap:8px;margin-top:14px">
-        <label style="margin:0;white-space:nowrap;color:#888;font-size:12px">Timeout (s)</label>
-        <input type="number" id="td-timeout" min="1" placeholder="30" style="width:72px;padding:4px 8px">
-        <button class="btn-primary btn-xs" onclick="saveToolTimeout()">Save</button>
+      <label>Auth</label>
+      <div id="ns-auth-fields"></div>
+      <div id="ns-oauth2"></div>
+      <div class="btn-row" style="margin-top:8px">
+        <button class="btn-primary btn-xs" onclick="saveNamespaceAuth()">Save Auth</button>
+        <button class="btn-ghost btn-xs" onclick="clearNamespaceAuth()">Clear</button>
       </div>
-      <label>Input Schema</label>
-      <pre id="td-in" style="background:#111;padding:10px;border-radius:6px;font-size:11px;overflow:auto;margin-top:4px;color:#aaa;white-space:pre-wrap"></pre>
+      <div id="ns-tool-detail" style="display:none;margin-top:18px;border-top:1px solid #1e1e1e;padding-top:14px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <h3 id="td-name" style="margin:0;font-size:14px;color:#eee"></h3>
+          <button class="btn-danger btn-xs" onclick="deleteTool(document.getElementById('td-name').textContent)">Delete</button>
+        </div>
+        <label>Description</label>
+        <p id="td-desc" style="font-size:13px;color:#ccc;margin-top:4px"></p>
+        <label>Endpoint</label>
+        <p id="td-endpoint" style="font-size:12px;color:#8ab4f8;font-family:monospace;margin-top:4px"></p>
+        <div style="display:flex;align-items:center;gap:8px;margin-top:14px">
+          <label style="margin:0;white-space:nowrap;color:#888;font-size:12px">Timeout (s)</label>
+          <input type="number" id="td-timeout" min="1" placeholder="30" style="width:72px;padding:4px 8px">
+          <button class="btn-primary btn-xs" onclick="saveToolTimeout()">Save</button>
+        </div>
+        <label>Input Schema</label>
+        <pre id="td-in" style="background:#111;padding:10px;border-radius:6px;font-size:11px;overflow:auto;margin-top:4px;color:#aaa;white-space:pre-wrap"></pre>
+      </div>
     </div>
     <div id="tool-import-panel" class="card">
       <h2>Import OpenAPI Spec</h2>
@@ -197,36 +214,32 @@
 </div>
 
 <!-- SKILLS -->
-<div id="panel-skills" class="panel">
+<div id="panel-toolboxes" class="panel">
   <div class="list-col">
-    <button class="new-btn btn-ghost" onclick="newSkill()">+ New Skill</button>
-    <h2>Skills</h2>
-    <div id="skills-list"><p class="empty">Loading…</p></div>
+    <button class="new-btn btn-ghost" onclick="newToolbox()">+ New Toolbox</button>
+    <h2>Toolboxes</h2>
+    <div id="toolboxes-list"><p class="empty">Loading…</p></div>
   </div>
   <div class="form-col">
-    <div id="skill-form" class="card" style="display:none">
+    <div id="toolbox-form" class="card" style="display:none">
       <div style="display:flex;gap:10px">
         <div style="flex:1">
           <label>Name</label>
-          <input type="text" id="skill-name" placeholder="e.g. weather">
+          <input type="text" id="toolbox-name" placeholder="e.g. weather">
         </div>
         <div style="width:110px">
           <label>Version</label>
-          <input type="text" id="skill-version" placeholder="v1">
+          <input type="text" id="toolbox-version" placeholder="v1">
         </div>
       </div>
-      <label>Instructions</label>
-      <textarea id="skill-instructions" placeholder="Instructions for the agent on how to use these tools"></textarea>
       <label>System Prompt</label>
-      <textarea id="skill-system" placeholder="Optional system prompt injected with this skill"></textarea>
-      <label>Skill Context <span style="color:#888;font-size:11px">(JSON — passed to every tool call, visible as inp.skill_context)</span></label>
-      <textarea id="skill-context" placeholder='{"sender": "support@co.com"}' style="font-family:monospace;font-size:12px"></textarea>
+      <textarea id="toolbox-system" placeholder="Optional system prompt injected with this toolbox"></textarea>
       <label>Tools</label>
-      <div id="skill-tools-checkboxes" class="checkbox-grid"></div>
+      <div id="toolbox-tools-checkboxes" class="checkbox-grid"></div>
       <div class="btn-row">
-        <button class="btn-primary" onclick="saveSkill()">Save</button>
-        <button class="btn-danger" id="skill-delete-btn" onclick="deleteSkill()" style="display:none">Delete</button>
-        <button class="btn-ghost" onclick="closeSkillForm()">Cancel</button>
+        <button class="btn-primary" onclick="saveToolbox()">Save</button>
+        <button class="btn-danger" id="toolbox-delete-btn" onclick="deleteToolbox()" style="display:none">Delete</button>
+        <button class="btn-ghost" onclick="closeToolboxForm()">Cancel</button>
       </div>
     </div>
   </div>
@@ -264,22 +277,14 @@
         <input type="checkbox" id="agent-monty" style="width:auto;margin:0">
         Enable Monty (Python sandbox with tool access)
       </label>
-      <label>Auth Context</label>
-      <div id="agent-auth-fields"></div>
-      <details id="agent-auth-raw-wrap" style="margin-top:4px">
-        <summary style="cursor:pointer;color:#666;font-size:12px;user-select:none">Raw JSON override</summary>
-        <textarea id="agent-auth-context" placeholder='{"extra_key": "value"}' style="margin-top:6px"></textarea>
-      </details>
-      <label>Skills</label>
-      <div id="agent-skills-checkboxes" class="checkbox-grid"></div>
+      <label>Toolboxes</label>
+      <div id="agent-toolboxes-checkboxes" class="checkbox-grid"></div>
+      <label>Direct Tools <span style="color:#888;font-size:11px">(attach individual tools without a toolbox)</span></label>
+      <div id="agent-tool-refs-checkboxes" class="checkbox-grid"></div>
       <div class="btn-row">
         <button class="btn-primary" onclick="saveAgent()">Save</button>
         <button class="btn-danger" id="agent-delete-btn" onclick="deleteAgent()" style="display:none">Delete</button>
         <button class="btn-ghost" onclick="closeAgentForm()">Cancel</button>
-      </div>
-      <div id="agent-oauth2-connections" style="display:none;margin-top:18px">
-        <label style="margin-bottom:8px">OAuth2 Connections</label>
-        <div id="agent-oauth2-list"></div>
       </div>
     </div>
   </div>
@@ -331,8 +336,6 @@
       <input type="text" id="sched-cron" placeholder="0 9 * * *  (daily at 9am UTC)">
       <label>Prompt</label>
       <textarea id="sched-prompt" style="min-height:100px" placeholder="What the agent should do on each run…"></textarea>
-      <label>LLM Context <span style="color:#888;font-size:11px">(JSON — visible to LLM in system prompt)</span></label>
-      <textarea id="sched-llm-context" style="font-family:monospace;font-size:12px;min-height:60px" placeholder='{"key": "value"}'></textarea>
       <label style="display:flex;align-items:center;gap:8px;margin-top:14px">
         <input type="checkbox" id="sched-enabled" checked style="width:auto;margin:0"> Enabled
       </label>
@@ -373,8 +376,8 @@
         <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:#888;cursor:pointer"><input type="checkbox" value="agents:write" style="width:auto"> agents:write — create &amp; delete agents</label>
         <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:#888;cursor:pointer"><input type="checkbox" value="tools:read" style="width:auto"> tools:read — list tools</label>
         <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:#888;cursor:pointer"><input type="checkbox" value="tools:write" style="width:auto"> tools:write — import &amp; delete tools</label>
-        <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:#888;cursor:pointer"><input type="checkbox" value="skills:read" style="width:auto"> skills:read — list skills</label>
-        <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:#888;cursor:pointer"><input type="checkbox" value="skills:write" style="width:auto"> skills:write — create &amp; delete skills</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:#888;cursor:pointer"><input type="checkbox" value="toolboxes:read" style="width:auto"> toolboxes:read — list toolboxes</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:#888;cursor:pointer"><input type="checkbox" value="toolboxes:write" style="width:auto"> toolboxes:write — create &amp; delete toolboxes</label>
         <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:#888;cursor:pointer"><input type="checkbox" value="keys:manage" style="width:auto"> keys:manage — create &amp; delete API keys</label>
       </div>
       <div class="btn-row">
@@ -409,7 +412,8 @@
 <div id="toast" class="toast"></div>
 
 <script>
-let allTools = [], allSkills = [], allAgents = [], allApiKeys = [], allSessions = [];
+let allTools = [], allToolboxes = [], allAgents = [], allApiKeys = [], allSessions = [], allNamespaces = [];
+let currentNamespace = null;
 let currentTab = 'tools';
 
 const UI_API_KEY = document.querySelector('meta[name="omniagent-api-key"]')?.content || '';
@@ -441,7 +445,7 @@ function toast(msg, ok = true) {
 function switchTab(tab) {
   currentTab = tab;
   document.querySelectorAll('.tab').forEach((el, i) => {
-    el.classList.toggle('active', ['tools','skills','agents','chat','schedules','settings'][i] === tab);
+    el.classList.toggle('active', ['tools','toolboxes','agents','chat','schedules','settings'][i] === tab);
   });
   document.querySelectorAll('.panel').forEach(el => el.classList.remove('active'));
   document.getElementById('panel-' + tab).classList.add('active');
@@ -450,12 +454,16 @@ function switchTab(tab) {
 
 async function loadAll() {
   try {
-    [allTools, allSkills, allAgents] = await Promise.all([
+    [allTools, allToolboxes, allAgents, allNamespaces] = await Promise.all([
       api('GET', '/tools'),
-      api('GET', '/skills'),
+      api('GET', '/toolboxes'),
       api('GET', '/agents'),
+      api('GET', '/namespaces'),
     ]);
-    renderTools(); renderSkills(); renderAgents(); renderChatAgents();
+    renderNamespaces(); renderToolboxes(); renderAgents(); renderChatAgents();
+    if (currentNamespace && allTools.some(t => t.namespace === currentNamespace)) {
+      selectNamespace(currentNamespace);
+    }
     if (currentTab === 'settings') loadApiKeys();
     if (currentTab === 'schedules') loadSchedules();
     if (new URLSearchParams(location.search).get('oauth2') === 'success') {
@@ -564,25 +572,95 @@ async function deleteApiKey() {
 // ── Tools ──────────────────────────────────────────────────────────────────
 
 function showImportPanel() {
-  document.getElementById('tool-detail').style.display = 'none';
+  currentNamespace = null;
+  document.getElementById('namespace-panel').style.display = 'none';
+  document.getElementById('ns-tools-sidebar-wrap').style.display = 'none';
   document.getElementById('tool-import-panel').style.display = 'block';
+  renderNamespaces();
 }
 
-function renderTools() {
-  const el = document.getElementById('tools-list');
+function renderNamespaces() {
+  const el = document.getElementById('namespace-list');
   if (!allTools.length) { el.innerHTML = '<p class="empty">No tools imported</p>'; return; }
   const byNs = {};
   allTools.forEach(t => { const ns = t.namespace || ''; (byNs[ns] = byNs[ns] || []).push(t); });
-  el.innerHTML = Object.entries(byNs).map(([ns, tools]) => `
-    <div class="ns-header">
-      <span>${ns}</span>
-      <button class="btn-danger btn-xs" onclick="event.stopPropagation();deleteNamespace('${ns}')">Delete all</button>
-    </div>
-    ${tools.map(t => `
+  el.innerHTML = Object.entries(byNs).map(([ns, tools]) => {
+    const info = allNamespaces.find(n => n.namespace === ns) || { auth_context_keys: [] };
+    const dot = info.auth_context_keys.length ? '<span style="color:#6fcf6f;margin-left:5px">●</span>' : '';
+    const sel = currentNamespace === ns ? 'border-left:2px solid #4f7ef8;background:#111' : '';
+    return `<div class="item" style="${sel}" onclick="selectNamespace('${escHtml(ns)}')">
+      <div class="name">${escHtml(ns)}${dot}</div>
+      <div class="sub">${tools.length} tool${tools.length !== 1 ? 's' : ''}</div>
+    </div>`;
+  }).join('');
+}
+
+function selectNamespace(ns) {
+  currentNamespace = ns;
+  document.getElementById('tool-import-panel').style.display = 'none';
+  document.getElementById('namespace-panel').style.display = 'block';
+  document.getElementById('ns-tool-detail').style.display = 'none';
+  renderNamespacePanel(ns);
+  renderNamespaces();
+  const nsTools = allTools.filter(t => t.namespace === ns);
+  const wrap = document.getElementById('ns-tools-sidebar-wrap');
+  wrap.style.display = nsTools.length ? 'block' : 'none';
+  document.getElementById('ns-tools-sidebar-header').textContent = ns;
+  document.getElementById('ns-tools-sidebar').innerHTML = nsTools.map(t => `
     <div class="item" onclick="showTool('${escHtml(t.name)}')">
-      <div class="name">${escHtml(t.name)}</div>
-      <div class="sub">${t.openapi_method} ${t.openapi_path}</div>
-    </div>`).join('')}`).join('');
+      <div class="name">${escHtml(t.name.replace(ns + '.', ''))}</div>
+      <div class="sub" style="font-family:monospace">${escHtml(t.openapi_method)} ${escHtml(t.openapi_path)}</div>
+    </div>`).join('');
+}
+
+function renderNamespacePanel(ns) {
+  const nsTools = allTools.filter(t => t.namespace === ns);
+  const info = allNamespaces.find(n => n.namespace === ns) || { auth_context_keys: [] };
+  document.getElementById('ns-panel-name').textContent = ns;
+  renderAuthFields('ns-auth-fields', nsTools.map(t => t.name), null, info.auth_context_keys);
+  renderNamespaceOauth2(ns, nsTools.map(t => t.name));
+}
+
+function renderNamespaceOauth2(ns, toolNames) {
+  const el = document.getElementById('ns-oauth2');
+  const oauth2Tools = allTools.filter(t => toolNames.includes(t.name) && t.openapi_security?.authorization_url);
+  if (!oauth2Tools.length) { el.innerHTML = ''; return; }
+  const byProvider = {};
+  oauth2Tools.forEach(t => {
+    const key = t.openapi_security.authorization_url;
+    if (!byProvider[key]) byProvider[key] = t;
+  });
+  el.innerHTML = `<label style="margin-top:10px;margin-bottom:6px">OAuth2</label>` +
+    Object.values(byProvider).map(tool => {
+      const url = `/oauth2/connect?namespace=${encodeURIComponent(ns)}&tool_name=${encodeURIComponent(tool.name)}`;
+      return `<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid #1e1e1e">
+        <span style="font-size:12px;color:#ccc">${escHtml(ns)}</span>
+        <a href="${url}" style="text-decoration:none"><button class="btn-primary btn-xs">Connect</button></a>
+      </div>`;
+    }).join('');
+}
+
+async function saveNamespaceAuth() {
+  const auth_context = buildAuthContextFrom('ns-auth-fields');
+  if (!auth_context) { toast('No auth values entered', false); return; }
+  try {
+    await api('PUT', `/namespaces/${encodeURIComponent(currentNamespace)}/auth`, { auth_context });
+    toast('Auth saved');
+    allNamespaces = await api('GET', '/namespaces');
+    renderNamespaces();
+    renderNamespacePanel(currentNamespace);
+  } catch(e) { toast(e.message, false); }
+}
+
+async function clearNamespaceAuth() {
+  if (!confirm(`Clear auth for "${currentNamespace}"?`)) return;
+  try {
+    await api('DELETE', `/namespaces/${encodeURIComponent(currentNamespace)}/auth`);
+    toast('Auth cleared');
+    allNamespaces = await api('GET', '/namespaces');
+    renderNamespaces();
+    renderNamespacePanel(currentNamespace);
+  } catch(e) { toast(e.message, false); }
 }
 
 async function deleteTool(name) {
@@ -591,8 +669,15 @@ async function deleteTool(name) {
     await api('DELETE', '/tools/' + encodeURIComponent(name));
     toast('Tool deleted');
     await loadAll();
-    document.getElementById('tool-detail').style.display = 'none';
-    document.getElementById('tool-import-panel').style.display = 'block';
+    document.getElementById('ns-tool-detail').style.display = 'none';
+    if (currentNamespace && allTools.some(t => t.namespace === currentNamespace)) {
+      selectNamespace(currentNamespace);
+    } else {
+      currentNamespace = null;
+      document.getElementById('ns-tools-sidebar-wrap').style.display = 'none';
+      document.getElementById('namespace-panel').style.display = 'none';
+      document.getElementById('tool-import-panel').style.display = 'block';
+    }
   } catch(e) { toast(e.message, false); }
 }
 
@@ -600,9 +685,12 @@ async function deleteNamespace(ns) {
   if (!confirm(`Delete all tools in namespace "${ns}"?`)) return;
   try {
     await api('DELETE', '/tools/namespace/' + encodeURIComponent(ns));
+    await api('DELETE', '/namespaces/' + encodeURIComponent(ns) + '/auth').catch(() => {});
     toast('Namespace deleted');
+    currentNamespace = null;
     await loadAll();
-    document.getElementById('tool-detail').style.display = 'none';
+    document.getElementById('namespace-panel').style.display = 'none';
+    document.getElementById('ns-tools-sidebar-wrap').style.display = 'none';
     document.getElementById('tool-import-panel').style.display = 'block';
   } catch(e) { toast(e.message, false); }
 }
@@ -610,8 +698,7 @@ async function deleteNamespace(ns) {
 function showTool(name) {
   const t = allTools.find(x => x.name === name);
   if (!t) return;
-  document.getElementById('tool-import-panel').style.display = 'none';
-  document.getElementById('tool-detail').style.display = 'block';
+  document.getElementById('ns-tool-detail').style.display = 'block';
   document.getElementById('td-name').textContent = t.name;
   document.getElementById('td-desc').textContent = t.description || '—';
   document.getElementById('td-endpoint').textContent = `${t.openapi_method} ${t.openapi_base_url}${t.openapi_path}`;
@@ -653,53 +740,55 @@ async function doImportOpenAPI() {
   const res = await api('POST', '/tools/import-openapi', { spec, namespace, base_url: baseUrl });
   resultEl.style.display = 'block';
   resultEl.textContent = `Imported ${res.imported} tools: ${res.tools.join(', ')}`;
-  const [tools] = await Promise.all([api('GET', '/tools')]);
-  allTools = tools;
-  renderTools();
-  renderToolCheckboxes('skill-tools-checkboxes', []);
+  [allTools, allNamespaces] = await Promise.all([api('GET', '/tools'), api('GET', '/namespaces')]);
+  renderNamespaces();
+  renderToolCheckboxes('toolbox-tools-checkboxes', []);
+  selectNamespace(namespace);
 }
 
 // ── Skills ─────────────────────────────────────────────────────────────────
 
-function renderSkills() {
-  const el = document.getElementById('skills-list');
-  if (!allSkills.length) { el.innerHTML = '<p class="empty">No skills yet</p>'; return; }
-  el.innerHTML = allSkills.map(s => `
+function renderToolboxes() {
+  const el = document.getElementById('toolboxes-list');
+  if (!allToolboxes.length) { el.innerHTML = '<p class="empty">No toolboxes yet</p>'; return; }
+  el.innerHTML = allToolboxes.map(s => `
     <div class="item" data-name="${escHtml(s.name)}" data-version="${escHtml(s.version)}" onclick="editSkillEl(this)">
       <div class="name">${escHtml(s.name)} <span style="color:#555;font-size:11px">${escHtml(s.version)}</span></div>
       <div class="sub">${(s.tool_names||[]).length} tools</div>
     </div>`).join('');
 }
 
-function newSkill() {
-  document.getElementById('skill-name').value = '';
-  document.getElementById('skill-version').value = '';
-  document.getElementById('skill-instructions').value = '';
-  document.getElementById('skill-system').value = '';
-  document.getElementById('skill-context').value = '';
-  document.getElementById('skill-delete-btn').style.display = 'none';
-  renderToolCheckboxes('skill-tools-checkboxes', []);
-  document.getElementById('skill-form').style.display = 'block';
+function newToolbox() {
+  document.getElementById('toolbox-name').value = '';
+  document.getElementById('toolbox-version').value = '';
+  document.getElementById('toolbox-system').value = '';
+  document.getElementById('toolbox-delete-btn').style.display = 'none';
+  renderToolCheckboxes('toolbox-tools-checkboxes', [], 'toggleTool');
+  document.getElementById('toolbox-form').style.display = 'block';
 }
 
-function editSkill(name, version) {
-  const s = allSkills.find(x => x.name === name && x.version === version);
+function editToolbox(name, version) {
+  const s = allToolboxes.find(x => x.name === name && x.version === version);
   if (!s) return;
-  document.getElementById('skill-name').value = s.name;
-  document.getElementById('skill-version').value = s.version;
-  document.getElementById('skill-instructions').value = s.instructions || '';
-  document.getElementById('skill-system').value = s.system_prompt || '';
-  document.getElementById('skill-context').value = s.skill_context != null ? JSON.stringify(s.skill_context, null, 2) : '';
-  document.getElementById('skill-delete-btn').style.display = 'inline-block';
-  renderToolCheckboxes('skill-tools-checkboxes', s.tool_names || []);
-  document.getElementById('skill-form').style.display = 'block';
+  document.getElementById('toolbox-name').value = s.name;
+  document.getElementById('toolbox-version').value = s.version;
+  document.getElementById('toolbox-system').value = s.system_prompt || '';
+  document.getElementById('toolbox-delete-btn').style.display = 'inline-block';
+  renderToolCheckboxes('toolbox-tools-checkboxes', s.tool_names || [], 'toggleTool');
+  document.getElementById('toolbox-form').style.display = 'block';
 }
 
-function closeSkillForm() {
-  document.getElementById('skill-form').style.display = 'none';
+function getToolNamesFromContainer(containerId) {
+  return [...document.querySelectorAll(`#${containerId} button[data-tool]`)]
+    .filter(b => b.style.borderColor === 'rgb(79, 126, 248)')
+    .map(b => b.dataset.tool);
 }
 
-function renderToolCheckboxes(containerId, selected) {
+function closeToolboxForm() {
+  document.getElementById('toolbox-form').style.display = 'none';
+}
+
+function renderToolCheckboxes(containerId, selected, onToggle = 'toggleTool') {
   const el = document.getElementById(containerId);
   if (!allTools.length) { el.innerHTML = '<span style="color:#555;font-size:12px">No tools registered</span>'; return; }
   const byNs = {};
@@ -710,7 +799,7 @@ function renderToolCheckboxes(containerId, selected) {
       <div style="display:flex;flex-wrap:wrap;gap:6px">
         ${tools.map(t => `<button type="button"
           data-tool="${escHtml(t.name)}"
-          onclick="toggleTool(this)"
+          onclick="${onToggle}(this)"
           style="padding:4px 10px;border-radius:4px;font-size:12px;cursor:pointer;border:1px solid ${selected.includes(t.name) ? '#4f7ef8' : '#2a2a2a'};background:${selected.includes(t.name) ? '#1a2240' : '#111'};color:${selected.includes(t.name) ? '#8ab4f8' : '#888'}"
           >${escHtml(t.name.replace(ns + '.', ''))}</button>`).join('')}
       </div>
@@ -725,43 +814,40 @@ function toggleTool(btn) {
   btn.style.color = on ? '#8ab4f8' : '#888';
 }
 
+function toggleAgentTool(btn) {
+  toggleTool(btn);
+  onToolboxesChanged();
+}
+
 function getChecked(containerId) {
   return [...document.querySelectorAll(`#${containerId} button[data-tool]`)]
     .filter(b => b.style.borderColor === 'rgb(79, 126, 248)')
     .map(b => b.dataset.tool);
 }
 
-async function saveSkill() {
-  const skillContextRaw = document.getElementById('skill-context').value.trim();
-  let skill_context = null;
-  if (skillContextRaw) {
-    try { skill_context = JSON.parse(skillContextRaw); }
-    catch { toast('Skill Context must be valid JSON', false); return; }
-  }
+async function saveToolbox() {
   const body = {
-    name: document.getElementById('skill-name').value.trim(),
-    version: document.getElementById('skill-version').value.trim() || 'v1',
-    instructions: document.getElementById('skill-instructions').value.trim(),
-    system_prompt: document.getElementById('skill-system').value.trim(),
-    tool_names: getChecked('skill-tools-checkboxes'),
-    skill_context,
+    name: document.getElementById('toolbox-name').value.trim(),
+    version: document.getElementById('toolbox-version').value.trim() || 'v1',
+    system_prompt: document.getElementById('toolbox-system').value.trim(),
+    tool_names: getChecked('toolbox-tools-checkboxes'),
   };
   if (!body.name) { toast('Name required', false); return; }
   try {
-    await api('POST', '/skills', body);
-    toast('Skill saved');
+    await api('POST', '/toolboxes', body);
+    toast('Toolbox saved');
     closeSkillForm();
     await loadAll();
   } catch(e) { toast(e.message, false); }
 }
 
-async function deleteSkill() {
-  const name = document.getElementById('skill-name').value;
-  const version = document.getElementById('skill-version').value;
-  if (!name || !version || !confirm('Delete this skill version?')) return;
+async function deleteToolbox() {
+  const name = document.getElementById('toolbox-name').value;
+  const version = document.getElementById('toolbox-version').value;
+  if (!name || !version || !confirm('Delete this toolbox version?')) return;
   try {
-    await api('DELETE', `/skills/${encodeURIComponent(name)}/${encodeURIComponent(version)}`);
-    toast('Skill deleted');
+    await api('DELETE', `/toolboxes/${encodeURIComponent(name)}/${encodeURIComponent(version)}`);
+    toast('Toolbox deleted');
     closeSkillForm();
     await loadAll();
   } catch(e) { toast(e.message, false); }
@@ -775,11 +861,11 @@ function renderAgents() {
   el.innerHTML = allAgents.map(a => `
     <div class="item" data-name="${escHtml(a.name)}" data-version="${escHtml(a.version)}" onclick="editAgentEl(this)">
       <div class="name">${escHtml(a.name)} <span style="color:#555;font-size:11px">${escHtml(a.version)}</span></div>
-      <div class="sub">${a.harness} · ${Object.keys(a.skill_refs||{}).length} skills</div>
+      <div class="sub">${a.harness} · ${Object.keys(a.toolbox_refs||{}).length} toolboxes · ${(a.tool_refs||[]).length} tools</div>
     </div>`).join('');
 }
 
-function editSkillEl(el) { editSkill(el.dataset.name, el.dataset.version); }
+function editSkillEl(el) { editToolbox(el.dataset.name, el.dataset.version); }
 function editAgentEl(el) { editAgent(el.dataset.name, el.dataset.version); }
 
 const MODEL_OPTIONS = {
@@ -814,12 +900,10 @@ function newAgent() {
   document.getElementById('agent-harness').value = 'antigravity';
   document.getElementById('agent-system').value = '';
   document.getElementById('agent-monty').checked = false;
-  document.getElementById('agent-auth-context').value = '';
-  renderAuthFields({}, null);
   updateModelOptions();
   document.getElementById('agent-delete-btn').style.display = 'none';
-  document.getElementById('agent-oauth2-connections').style.display = 'none';
-  renderSkillCheckboxes({});
+  renderToolboxCheckboxes({});
+  renderDirectToolCheckboxes([]);
   document.getElementById('agent-form').style.display = 'block';
 }
 
@@ -832,11 +916,9 @@ function editAgent(name, version) {
   updateModelOptions(a.model || '');
   document.getElementById('agent-system').value = a.system_prompt || '';
   document.getElementById('agent-monty').checked = !!a.use_monty;
-  document.getElementById('agent-auth-context').value = '';
-  renderAuthFields(a.skill_refs || {}, null, a.auth_context_keys || []);
   document.getElementById('agent-delete-btn').style.display = 'inline-block';
-  renderSkillCheckboxes(a.skill_refs || {});
-  renderOauth2Connections(a);
+  renderToolboxCheckboxes(a.toolbox_refs || {});
+  renderDirectToolCheckboxes(a.tool_refs || []);
   document.getElementById('agent-form').style.display = 'block';
 }
 
@@ -844,14 +926,10 @@ function closeAgentForm() {
   document.getElementById('agent-form').style.display = 'none';
 }
 
-function renderAuthFields(skillRefs, existingAuth, authContextKeys = []) {
+function renderAuthFields(containerId, toolNames, existingAuth, authContextKeys = []) {
   const configuredKeys = new Set(authContextKeys);
-  const skillNames = Object.keys(skillRefs || {});
-  const toolNames = new Set(
-    allSkills.filter(s => skillNames.includes(s.name)).flatMap(s => s.tool_names || [])
-  );
-  const secTools = allTools.filter(t => toolNames.has(t.name) && t.openapi_security);
-  const container = document.getElementById('agent-auth-fields');
+  const secTools = allTools.filter(t => new Set(toolNames).has(t.name) && t.openapi_security);
+  const container = document.getElementById(containerId);
   const seen = new Set();
   const groups = [];
   secTools.forEach(t => {
@@ -896,70 +974,53 @@ function renderAuthFields(skillRefs, existingAuth, authContextKeys = []) {
   return seen;
 }
 
-function buildAuthContext() {
-  const result = {};
-  const raw = document.getElementById('agent-auth-context').value.trim();
-  if (raw) {
-    try { Object.assign(result, JSON.parse(raw)); } catch(e) { throw new Error('auth_context: invalid JSON'); }
-  }
-  document.querySelectorAll('#agent-auth-fields [data-auth-key]').forEach(el => {
+function buildAuthContextFrom(containerId, rawOverride = null) {
+  const result = { ...(rawOverride || {}) };
+  document.querySelectorAll(`#${containerId} [data-auth-key]`).forEach(el => {
     if (el.value.trim()) result[el.dataset.authKey] = el.value.trim();
   });
   return Object.keys(result).length ? result : null;
 }
 
-function onSkillsChanged() {
-  // Collect current typed values before re-render
-  const current = {};
-  document.querySelectorAll('#agent-auth-fields [data-auth-key]').forEach(el => {
-    if (el.value.trim()) current[el.dataset.authKey] = el.value.trim();
-  });
-  renderAuthFields(getCheckedSkillRefs(), current);
-  renderOauth2Connections({ skill_refs: getCheckedSkillRefs(), name: document.getElementById('agent-name').value, version: document.getElementById('agent-version').value });
+function onToolboxesChanged() {}
+
+function renderToolboxCheckboxes(selectedRefs) {
+  const el = document.getElementById('agent-toolboxes-checkboxes');
+  if (!allToolboxes.length) { el.innerHTML = '<span style="color:#555;font-size:12px">No toolboxes yet</span>'; return; }
+  el.innerHTML = '<div style="display:flex;flex-wrap:wrap;gap:6px">' +
+    allToolboxes.map(s => {
+      const on = selectedRefs[s.name] === s.version;
+      return `<button type="button"
+        data-skill-name="${escHtml(s.name)}" data-skill-version="${escHtml(s.version)}"
+        onclick="toggleToolbox(this)"
+        style="padding:4px 10px;border-radius:4px;font-size:12px;cursor:pointer;border:1px solid ${on ? '#4f7ef8' : '#2a2a2a'};background:${on ? '#1a2240' : '#111'};color:${on ? '#8ab4f8' : '#888'}"
+        >${escHtml(s.name)} <span style="font-size:10px;opacity:.7">${escHtml(s.version)}</span></button>`;
+    }).join('') + '</div>';
 }
 
-function renderOauth2Connections(agent) {
-  const section = document.getElementById('agent-oauth2-connections');
-  const list = document.getElementById('agent-oauth2-list');
-  const skillNames = Object.keys(agent.skill_refs || {});
-  const toolNames = new Set(
-    allSkills.filter(s => skillNames.includes(s.name)).flatMap(s => s.tool_names || [])
-  );
-  const oauth2Tools = allTools.filter(t => toolNames.has(t.name) && t.openapi_security?.authorization_url);
-  if (!oauth2Tools.length) { section.style.display = 'none'; return; }
-  // One button per unique provider (authorization_url), using first tool as representative
-  const byProvider = {};
-  oauth2Tools.forEach(t => {
-    const key = t.openapi_security.authorization_url;
-    if (!byProvider[key]) byProvider[key] = { label: t.namespace || t.name, tool: t };
-  });
-  section.style.display = 'block';
-  list.innerHTML = Object.values(byProvider).map(({ label, tool }) => {
-    const url = `/oauth2/connect?agent_id=${encodeURIComponent(agent.name)}&agent_version=${encodeURIComponent(agent.version)}&tool_name=${encodeURIComponent(tool.name)}`;
-    return `<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid #1e1e1e">
-      <span style="font-size:12px;color:#ccc">${escHtml(label)}</span>
-      <a href="${url}" style="text-decoration:none"><button class="btn-primary btn-xs">Connect</button></a>
-    </div>`;
-  }).join('');
-}
-
-function renderSkillCheckboxes(selectedRefs) {
-  // selectedRefs: {"skill_name": "version"}
-  const el = document.getElementById('agent-skills-checkboxes');
-  if (!allSkills.length) { el.innerHTML = '<span style="color:#555;font-size:12px">No skills yet</span>'; return; }
-  el.innerHTML = allSkills.map(s => `
-    <label>
-      <input type="checkbox" data-skill-name="${escHtml(s.name)}" data-skill-version="${escHtml(s.version)}" ${selectedRefs[s.name] === s.version ? 'checked' : ''} onchange="onSkillsChanged()">
-      ${escHtml(s.name)}<span style="color:#555;font-size:10px"> ${escHtml(s.version)}</span>
-    </label>`).join('');
+function toggleToolbox(btn) {
+  const on = btn.style.borderColor !== 'rgb(79, 126, 248)';
+  btn.style.borderColor = on ? '#4f7ef8' : '#2a2a2a';
+  btn.style.background = on ? '#1a2240' : '#111';
+  btn.style.color = on ? '#8ab4f8' : '#888';
+  onToolboxesChanged();
 }
 
 function getCheckedSkillRefs() {
   const refs = {};
-  document.querySelectorAll('#agent-skills-checkboxes input[type=checkbox]:checked').forEach(el => {
-    refs[el.dataset.skillName] = el.dataset.skillVersion;
+  document.querySelectorAll('#agent-toolboxes-checkboxes button[data-skill-name]').forEach(btn => {
+    if (btn.style.borderColor === 'rgb(79, 126, 248)')
+      refs[btn.dataset.skillName] = btn.dataset.skillVersion;
   });
   return refs;
+}
+
+function renderDirectToolCheckboxes(selectedRefs) {
+  renderToolCheckboxes('agent-tool-refs-checkboxes', selectedRefs || [], 'toggleAgentTool');
+}
+
+function getCheckedToolRefs() {
+  return getChecked('agent-tool-refs-checkboxes');
 }
 
 async function saveAgent() {
@@ -970,8 +1031,8 @@ async function saveAgent() {
     model: document.getElementById('agent-model').value.trim(),
     system_prompt: document.getElementById('agent-system').value.trim(),
     use_monty: document.getElementById('agent-monty').checked,
-    skill_refs: getCheckedSkillRefs(),
-    auth_context: buildAuthContext(),
+    toolbox_refs: getCheckedSkillRefs(),
+    tool_refs: getCheckedToolRefs(),
   };
   if (!body.name) { toast('Name required', false); return; }
   try {
@@ -1092,6 +1153,8 @@ async function chatNewSession() {
   if (!raw) { toast('Select an agent first', false); return; }
   const {n: agentName, v: agentVersion} = JSON.parse(raw);
   chatSSE && chatSSE.close();
+  chatSSE = null;
+  chatBusy = false;
   document.getElementById('chat-messages').innerHTML = '';
   document.getElementById('chat-sidebar-items').innerHTML = '';
   try {
@@ -1123,6 +1186,8 @@ async function chatSend() {
 
   try {
     await api('POST', '/sessions/' + chatSessionId + '/run', { prompt: text });
+    const s = allSessions.find(s => s.id === chatSessionId);
+    if (s) { s.status = 'running'; renderSessions(); }
     streamSession(chatSessionId);
   } catch(e) {
     removeThinking();
@@ -1164,6 +1229,11 @@ function streamSession(sessionId) {
   if (chatSSE) chatSSE.close();
   chatSSE = new EventSource('/sessions/' + sessionId + '/stream?key=' + encodeURIComponent(UI_API_KEY));
 
+  const _patchSessionStatus = (id, status) => {
+    const s = allSessions.find(s => s.id === id);
+    if (s) { s.status = status; renderSessions(); }
+  };
+
   chatSSE.onmessage = async (e) => {
     if (chatSessionId !== sessionId) return;
     const ev = JSON.parse(e.data);
@@ -1173,8 +1243,10 @@ function streamSession(sessionId) {
         const status = await api('GET', '/sessions/' + sessionId + '/status');
         renderSidebar(status.tool_calls || []);
       } catch(_) {}
+    } else if (ev.type === 'running') {
+      _patchSessionStatus(sessionId, 'running');
     } else if (ev.type === 'deferred') {
-      // Turn paused — reload history to show intermediate messages, SSE stays open
+      _patchSessionStatus(sessionId, 'deferred');
       try {
         const status = await api('GET', '/sessions/' + sessionId + '/status');
         renderSidebar(status.tool_calls || []);
@@ -1187,6 +1259,7 @@ function streamSession(sessionId) {
       chatSSE.close();
       chatBusy = false;
       document.getElementById('chat-send').disabled = false;
+      _patchSessionStatus(sessionId, 'complete');
       try {
         const status = await api('GET', '/sessions/' + sessionId + '/status');
         renderSidebar(status.tool_calls || []);
@@ -1198,6 +1271,7 @@ function streamSession(sessionId) {
       chatSSE.close();
       chatBusy = false;
       document.getElementById('chat-send').disabled = false;
+      _patchSessionStatus(sessionId, 'failed');
       appendMsg('assistant', '⚠ ' + (ev.reason || 'session failed'));
     }
   };
@@ -1317,7 +1391,6 @@ function newSchedule() {
   renderScheduleAgentSelect();
   document.getElementById('sched-cron').value = '';
   document.getElementById('sched-prompt').value = '';
-  document.getElementById('sched-llm-context').value = '';
   document.getElementById('sched-enabled').checked = true;
   document.getElementById('sched-delete-btn').style.display = 'none';
   document.getElementById('schedule-runs-panel').style.display = 'none';
@@ -1332,7 +1405,6 @@ function selectSchedule(id) {
   renderScheduleAgentSelect(s.agent_name);
   document.getElementById('sched-cron').value = s.cron_expr;
   document.getElementById('sched-prompt').value = s.prompt;
-  document.getElementById('sched-llm-context').value = s.llm_context ? JSON.stringify(s.llm_context, null, 2) : '';
   document.getElementById('sched-enabled').checked = s.enabled;
   document.getElementById('sched-delete-btn').style.display = 'inline-block';
   document.getElementById('schedule-form').style.display = 'block';
@@ -1388,25 +1460,17 @@ function closeScheduleForm() {
 }
 
 async function saveSchedule() {
-  const llmRaw = document.getElementById('sched-llm-context').value.trim();
-  let llm_context = null;
-  if (llmRaw) {
-    try { llm_context = JSON.parse(llmRaw); }
-    catch { toast('LLM Context must be valid JSON', false); return; }
-  }
   const body = {
     agent_name: document.getElementById('sched-agent').value,
     cron_expr: document.getElementById('sched-cron').value.trim(),
     prompt: document.getElementById('sched-prompt').value.trim(),
-    llm_context,
     enabled: document.getElementById('sched-enabled').checked,
   };
   if (!body.cron_expr || !body.prompt) { toast('Cron and prompt required', false); return; }
   try {
     if (currentScheduleId) {
       await api('PATCH', `/schedules/${currentScheduleId}`, {
-        cron_expr: body.cron_expr, prompt: body.prompt,
-        llm_context: body.llm_context, enabled: body.enabled,
+        cron_expr: body.cron_expr, prompt: body.prompt, enabled: body.enabled,
       });
     } else {
       await api('POST', '/schedules', body);

@@ -24,28 +24,34 @@ class ToolRecord(BaseModel):
     timeout: int | None = None
 
 
-# ── Skills ─────────────────────────────────────────────────────────────────
+# ── Toolboxes ──────────────────────────────────────────────────────────────
 
 
-class SkillCreate(BaseModel):
+class ToolboxCreate(BaseModel):
     name: str
     version: str
     tool_names: list[str]
-    instructions: str = ""
     system_prompt: str = ""
-    skill_context: Any = None
 
 
-class SkillRecord(BaseModel):
+class ToolboxRecord(BaseModel):
     id: uuid.UUID
     name: str
     version: str
     tool_names: list[str]
-    instructions: str
     system_prompt: str
-    skill_context: Any = None
     created_at: datetime
     updated_at: datetime
+
+
+class NamespaceAuthSet(BaseModel):
+    auth_context: Any
+
+
+class NamespaceRecord(BaseModel):
+    namespace: str
+    tool_count: int
+    auth_context_keys: list[str] = []
 
 
 # ── Agents ─────────────────────────────────────────────────────────────────
@@ -56,10 +62,10 @@ class AgentCreate(BaseModel):
     version: str
     harness: str
     model: str = ""
-    skill_refs: dict[str, str] = {}  # {"skill_name": "skill_version"}
+    toolbox_refs: dict[str, str] = {}  # {"toolbox_name": "toolbox_version"}
+    tool_refs: list[str] = []  # directly-attached tool names (no toolbox required)
     system_prompt: str = ""
     use_monty: bool = False
-    auth_context: Any = None
 
 
 class AgentRecord(BaseModel):
@@ -68,10 +74,10 @@ class AgentRecord(BaseModel):
     version: str
     harness: str
     model: str
-    skill_refs: dict[str, str]
+    toolbox_refs: dict[str, str]
+    tool_refs: list[str] = []
     system_prompt: str
     use_monty: bool
-    auth_context_keys: list[str] = []
     created_at: datetime
     updated_at: datetime
 
@@ -88,7 +94,8 @@ class SessionRecord(BaseModel):
     id: uuid.UUID
     agent_name: str
     agent_version: str
-    skill_versions: dict[str, str]
+    toolbox_versions: dict[str, str]
+    tool_refs: list[str] = []
     status: str
     schedule_id: uuid.UUID | None = None
     is_scheduled: bool = False
@@ -97,8 +104,6 @@ class SessionRecord(BaseModel):
 
 class RunRequest(BaseModel):
     prompt: str
-    auth_context: Any = None
-    llm_context: Any = None
 
 
 class ResumeRequest(BaseModel):
@@ -129,7 +134,8 @@ class SessionStatus(BaseModel):
     tool_calls: list[ToolCallEntry]
     agent_name: str
     agent_version: str
-    skill_versions: dict[str, str]
+    toolbox_versions: dict[str, str]
+    tool_refs: list[str] = []
 
 
 # ── Settings ───────────────────────────────────────────────────────────────
@@ -139,8 +145,8 @@ VALID_SCOPES = {
     "admin",
     "tools:read",
     "tools:write",
-    "skills:read",
-    "skills:write",
+    "toolboxes:read",
+    "toolboxes:write",
     "agents:read",
     "agents:write",
     "sessions:read",
@@ -201,7 +207,6 @@ class ScheduleCreate(BaseModel):
     agent_name: str
     cron_expr: str
     prompt: str
-    llm_context: Any = None
     auth_context: Any = None
     enabled: bool = True
 
@@ -209,7 +214,6 @@ class ScheduleCreate(BaseModel):
 class ScheduleUpdate(BaseModel):
     cron_expr: str | None = None
     prompt: str | None = None
-    llm_context: Any = None
     enabled: bool | None = None
 
 
@@ -218,7 +222,6 @@ class ScheduleRecord(BaseModel):
     agent_name: str
     cron_expr: str
     prompt: str
-    llm_context: Any = None
     enabled: bool
     last_run_at: datetime | None = None
     next_run_at: datetime | None = None

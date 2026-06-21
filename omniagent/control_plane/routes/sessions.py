@@ -7,7 +7,6 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 
 from omniagent.control_plane.auth import require_scope
-from omniagent.control_plane.crypto import encrypt_auth_context
 from omniagent.control_plane.db import get_conn
 from omniagent.control_plane.models import (
     MessageRecord,
@@ -42,15 +41,16 @@ async def create_session(
         if not agent:
             raise HTTPException(404, detail="Agent not found")
 
-        skill_versions = agent["skill_refs"] or {}
+        toolbox_versions = agent["toolbox_refs"] or {}
+        tool_refs = agent["tool_refs"] or []
 
         rows = await conn.execute(
             """
-            INSERT INTO sessions (agent_name, agent_version, skill_versions)
-            VALUES (%s, %s, %s)
+            INSERT INTO sessions (agent_name, agent_version, toolbox_versions, tool_refs)
+            VALUES (%s, %s, %s, %s)
             RETURNING *
             """,
-            (body.agent_name, agent["version"], json.dumps(skill_versions)),
+            (body.agent_name, agent["version"], json.dumps(toolbox_versions), tool_refs),
         )
         return SessionRecord.model_validate(dict(await rows.fetchone()))
 
@@ -94,14 +94,7 @@ async def run_session(
 
         await run_agent_job.configure(queue="default").defer_async(
             session_id=str(session_id),
-            payload=json.dumps(
-                {
-                    "history": messages,
-                    "auth_context": encrypt_auth_context(body.auth_context),
-                    "llm_context": body.llm_context,
-                },
-                default=str,
-            ),
+            payload=json.dumps({"history": messages}, default=str),
         )
 
     return JSONResponse({"session_id": str(session_id)}, status_code=202)
@@ -130,9 +123,6 @@ async def resume_session(
             ).model_dump()
         )
 
-        deferred_raw = session["deferred_payload"] or "{}"
-        deferred_data = json.loads(deferred_raw)
-
         rows = await conn.execute(
             """UPDATE sessions SET status='running', messages=%s, updated_at=NOW()
                WHERE id=%s AND status='deferred' RETURNING id""",
@@ -145,13 +135,7 @@ async def resume_session(
 
         await run_agent_job.configure(queue="default").defer_async(
             session_id=str(session_id),
-            payload=json.dumps(
-                {
-                    "history": messages,
-                    "auth_context": deferred_data.get("auth_context"),
-                    "llm_context": deferred_data.get("llm_context"),
-                }
-            ),
+            payload=json.dumps({"history": messages}),
         )
 
     return JSONResponse({"session_id": str(session_id)}, status_code=202)
@@ -194,5 +178,6 @@ async def get_session_status(
         tool_calls=session["tool_calls"] or [],
         agent_name=session["agent_name"],
         agent_version=session["agent_version"],
-        skill_versions=session["skill_versions"] or {},
+        toolbox_versions=session["toolbox_versions"] or {},
+        tool_refs=session["tool_refs"] or [],
     )

@@ -35,6 +35,11 @@ NATIVE_TOOL_DESCRIPTIONS: dict[str, str] = {
         "Create a recurring scheduled run for THIS agent on a cron schedule. "
         "Returns the new schedule ID and next_run_at."
     ),
+    "native.schedule_update": (
+        "Update the cron_expr and/or prompt of an existing schedule. "
+        "Use native.schedule_list to find the schedule_id first."
+    ),
+    "native.schedule_delete": "Delete a schedule by ID. Use native.schedule_list to find the schedule_id.",
     "native.defer_turn": (
         "Pause this session and resume after delay_seconds. "
         "Use when you have a duration to wait (e.g. 'check again in 30 seconds'). "
@@ -87,12 +92,27 @@ NATIVE_TOOL_SCHEMAS: dict[str, dict] = {
                 "type": "string",
                 "description": "Prompt this agent will receive on each scheduled run.",
             },
-            "llm_context": {
-                "type": "object",
-                "description": "Optional context passed to the LLM on each run.",
-            },
         },
         "required": ["cron_expr", "prompt"],
+    },
+    "native.schedule_update": {
+        "type": "object",
+        "properties": {
+            "schedule_id": {"type": "string", "description": "UUID of the schedule to update."},
+            "cron_expr": {
+                "type": "string",
+                "description": "New cron expression. Omit to keep existing.",
+            },
+            "prompt": {"type": "string", "description": "New prompt. Omit to keep existing."},
+        },
+        "required": ["schedule_id"],
+    },
+    "native.schedule_delete": {
+        "type": "object",
+        "properties": {
+            "schedule_id": {"type": "string", "description": "UUID of the schedule to delete."},
+        },
+        "required": ["schedule_id"],
     },
     "native.defer_turn": {
         "type": "object",

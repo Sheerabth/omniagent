@@ -21,8 +21,8 @@ from omniagent.worker.models import (
     BaseEvent,
     ErrorEvent,
     SessionConfig,
-    SkillSnapshot,
     SystemPromptEvent,
+    ToolboxSnapshot,
     ToolCallEvent,
     ToolResultEvent,
     ToolSnapshot,
@@ -63,7 +63,7 @@ async def _fetch_session_config(session_id: str) -> SessionConfig:
 
     async with get_conn() as conn:
         rows = await conn.execute(
-            "SELECT agent_name, agent_version, skill_versions FROM sessions WHERE id = %s",
+            "SELECT agent_name, agent_version, toolbox_versions, tool_refs FROM sessions WHERE id = %s",
             (session_id,),
         )
         session = await rows.fetchone()
@@ -72,7 +72,8 @@ async def _fetch_session_config(session_id: str) -> SessionConfig:
 
         agent_name = session["agent_name"]
         agent_version = session["agent_version"]
-        skill_versions: dict[str, str] = session["skill_versions"] or {}
+        toolbox_versions: dict[str, str] = session["toolbox_versions"] or {}
+        direct_tool_refs: list[str] = session["tool_refs"] or []
 
         rows = await conn.execute(
             "SELECT * FROM agents WHERE name = %s AND version = %s",
@@ -82,28 +83,48 @@ async def _fetch_session_config(session_id: str) -> SessionConfig:
         if not agent:
             raise RuntimeError(f"agent_version_deleted:{agent_name}:{agent_version}")
 
-        skills: list[SkillSnapshot] = []
-        all_tool_names: list[str] = []
-        tool_skill_name: dict[str, str] = {}
-        for sname, skill_version in skill_versions.items():
+        # Load toolboxes
+        toolboxes: list[ToolboxSnapshot] = []
+        toolbox_tool_names: list[str] = []
+        tool_to_toolbox: dict[str, str] = {}
+        for tname, toolbox_version in toolbox_versions.items():
             rows = await conn.execute(
-                "SELECT * FROM skills WHERE name = %s AND version = %s",
-                (sname, skill_version),
+                "SELECT * FROM toolboxes WHERE name = %s AND version = %s",
+                (tname, toolbox_version),
             )
-            skill = await rows.fetchone()
-            if not skill:
-                raise RuntimeError(f"skill_version_deleted:{sname}:{skill_version}")
-            skill_snap = SkillSnapshot.model_validate(dict(skill))
-            skills.append(skill_snap)
-            for t in skill["tool_names"]:
-                all_tool_names.append(t)
-                tool_skill_name[t] = sname
+            toolbox = await rows.fetchone()
+            if not toolbox:
+                raise RuntimeError(f"toolbox_version_deleted:{tname}:{toolbox_version}")
+            toolboxes.append(ToolboxSnapshot(system_prompt=toolbox["system_prompt"] or ""))
+            for t in toolbox["tool_names"]:
+                toolbox_tool_names.append(t)
+                tool_to_toolbox[t] = tname
 
-        tool_snapshot: dict[str, ToolSnapshot] = {}
+        # Batch-load all tools needed
+        all_tool_names = list(set(toolbox_tool_names + direct_tool_refs))
+        tool_rows: dict[str, Any] = {}
         if all_tool_names:
             rows = await conn.execute("SELECT * FROM tools WHERE name = ANY(%s)", (all_tool_names,))
             for tool in await rows.fetchall():
-                tool_snapshot[tool["name"]] = ToolSnapshot(
+                tool_rows[tool["name"]] = tool
+
+        # Batch-fetch namespace auth for all namespaces in one query
+        all_namespaces = list({t["namespace"] for t in tool_rows.values() if t.get("namespace")})
+        ns_auth: dict[str, Any] = {}
+        if all_namespaces:
+            rows = await conn.execute(
+                "SELECT namespace, auth_context FROM namespace_auth WHERE namespace = ANY(%s)",
+                (all_namespaces,),
+            )
+            for r in await rows.fetchall():
+                ns_auth[r["namespace"]] = decrypt_auth_context(r["auth_context"])
+
+        # Build tool_snapshot — toolbox tools first (take precedence over direct refs)
+        tool_snapshot: dict[str, ToolSnapshot] = {}
+        for name in [*toolbox_tool_names, *direct_tool_refs]:
+            if name in tool_rows and name not in tool_snapshot:
+                tool = tool_rows[name]
+                tool_snapshot[name] = ToolSnapshot(
                     name=tool["name"],
                     description=tool["description"],
                     input_schema=tool["input_schema"],
@@ -113,7 +134,8 @@ async def _fetch_session_config(session_id: str) -> SessionConfig:
                     openapi_base_url=tool["openapi_base_url"],
                     openapi_security=tool["openapi_security"],
                     timeout=tool["timeout"],
-                    skill_name=tool_skill_name.get(tool["name"], ""),
+                    skill_name=tool_to_toolbox.get(name, ""),
+                    auth_context=ns_auth.get(tool["namespace"]),
                 )
 
     return SessionConfig(
@@ -122,8 +144,7 @@ async def _fetch_session_config(session_id: str) -> SessionConfig:
         model=agent["model"],
         system_prompt=agent["system_prompt"],
         use_monty=agent["use_monty"],
-        auth_context=decrypt_auth_context(agent.get("auth_context")),
-        skills=skills,
+        toolboxes=toolboxes,
         tool_snapshot=tool_snapshot,
     )
 
@@ -205,12 +226,12 @@ async def _tool_executor(
     tool_name: str,
     input_data: dict[str, Any],
     tool_snapshot: dict[str, ToolSnapshot],
-    auth_context: Any = None,
     agent_name: str = "",
 ) -> Any:
     tool = tool_snapshot.get(tool_name)
     if not tool:
         raise RuntimeError(f"tool_not_found:{tool_name}")
+    auth_context = tool.auth_context
 
     path_params = set(re.findall(r"\{(\w+)\}", tool.openapi_path))
     if missing := path_params - input_data.keys():
@@ -309,28 +330,23 @@ def _safe_tool_name(name: str) -> str:
 
 def _build_system_prompt(
     config: SessionConfig,
-    llm_context: dict[str, Any] | None = None,
     extra_tools: dict[str, ToolSnapshot] | None = None,
 ) -> str:
     lines = [config.system_prompt]
-    if llm_context:
-        lines.append(f"\nUser context: {json.dumps(llm_context, default=str)}")
 
-    for skill in config.skills:
-        if skill.system_prompt:
-            lines.append(skill.system_prompt)
-        if skill.instructions:
-            lines.append(skill.instructions)
+    for toolbox in config.toolboxes:
+        if toolbox.system_prompt:
+            lines.append(toolbox.system_prompt)
 
     effective_snapshot = {**config.tool_snapshot, **(extra_tools or {})}
 
     if effective_snapshot and not config.use_monty:
-        # Group tools by skill for clearer LLM context.
-        by_skill: dict[str, list[tuple[str, ToolSnapshot]]] = {}
+        # Group tools by toolbox for clearer LLM context.
+        by_toolbox: dict[str, list[tuple[str, ToolSnapshot]]] = {}
         for tool_name, schema in effective_snapshot.items():
-            by_skill.setdefault(schema.skill_name or "", []).append((tool_name, schema))
-        for skill_name, tools in by_skill.items():
-            lines.append(f"\n## Skill: {skill_name}" if skill_name else "\nAvailable tools:")
+            by_toolbox.setdefault(schema.skill_name or "", []).append((tool_name, schema))
+        for skill_name, tools in by_toolbox.items():
+            lines.append(f"\n## Toolbox: {skill_name}" if skill_name else "\nAvailable tools:")
             for tool_name, schema in tools:
                 lines.append(f"- {tool_name}: {schema.description}")
                 if schema.input_schema:
@@ -392,23 +408,39 @@ def _make_native_tool_snapshot(name: str) -> ToolSnapshot:
 
 @app.task(name="run_agent_job", queue="default")
 async def run_agent_job(session_id: str, payload: str) -> None:
+    from omniagent.control_plane.db import get_conn
+
     data = json.loads(payload)
     history = [MessageRecord.model_validate(m) for m in data.get("history", [])]
-    runtime_auth_context: Any = decrypt_auth_context(data.get("auth_context"))
-    runtime_llm_context: Any = data.get("llm_context")
+
+    async with get_conn() as conn:
+        row = await (
+            await conn.execute("SELECT status FROM sessions WHERE id=%s", (session_id,))
+        ).fetchone()
+        if not row:
+            logger.warning("run_agent_job: session %s not found, skipping", session_id)
+            return
+        if row["status"] == "cancelled":
+            logger.info("run_agent_job: session %s cancelled, skipping", session_id)
+            return
+        if row["status"] in ("pending", "deferred"):
+            was_deferred = row["status"] == "deferred"
+            await conn.execute(
+                "UPDATE sessions SET status='running', updated_at=NOW() WHERE id=%s",
+                (session_id,),
+            )
+            if was_deferred:
+                await _emit_event(session_id, BaseEvent(type="running"))
 
     config = await _fetch_session_config(session_id)
     harness = config.harness
     model = config.model
     use_monty = config.use_monty
 
-    # Runtime auth_context replaces agent default wholesale — no merge.
-    auth_context = runtime_auth_context if runtime_auth_context is not None else config.auth_context
-
     # Inject native tools — must happen before building system prompt
     native_tools = {name: _make_native_tool_snapshot(name) for name in NATIVE_TOOL_DESCRIPTIONS}
     tool_snapshot = {**config.tool_snapshot, **native_tools}
-    system_prompt = _build_system_prompt(config, runtime_llm_context, extra_tools=native_tools)
+    system_prompt = _build_system_prompt(config, extra_tools=native_tools)
 
     llm_api_key = os.environ.get(f"OMNIAGENT_{harness.upper()}_API_KEY")
 
@@ -521,15 +553,6 @@ async def run_agent_job(session_id: str, payload: str) -> None:
             cron_expr = input_data.get("cron_expr", "")
             prompt = input_data.get("prompt", "")
             target_agent = config.agent_name
-            llm_ctx_raw = input_data.get("llm_context")
-            if llm_ctx_raw is not None:
-                from psycopg.types.json import Jsonb
-
-                llm_ctx = Jsonb(
-                    llm_ctx_raw if isinstance(llm_ctx_raw, dict) else {"value": llm_ctx_raw}
-                )
-            else:
-                llm_ctx = None
             try:
                 c = _croniter(cron_expr)
                 next_run = datetime.fromtimestamp(c.get_next(float), tz=UTC)
@@ -543,12 +566,99 @@ async def run_agent_job(session_id: str, payload: str) -> None:
             )
             async with get_conn() as conn:
                 rows = await conn.execute(
-                    """INSERT INTO schedules (agent_name, cron_expr, prompt, llm_context, next_run_at)
-                       VALUES (%s, %s, %s, %s, %s) RETURNING id""",
-                    (target_agent, cron_expr, prompt, llm_ctx, next_run),
+                    """INSERT INTO schedules (agent_name, cron_expr, prompt, next_run_at)
+                       VALUES (%s, %s, %s, %s) RETURNING id""",
+                    (target_agent, cron_expr, prompt, next_run),
                 )
                 schedule_id = str((await rows.fetchone())["id"])
             result = {"schedule_id": schedule_id, "next_run_at": next_run.isoformat()}
+            await _emit_event(
+                session_id,
+                ToolResultEvent(
+                    tool=tool_name,
+                    success=True,
+                    input=input_data,
+                    output=result,
+                    harness=harness,
+                    skill_name="native",
+                ),
+            )
+            return result
+
+        if tool_name == "native.schedule_update":
+            from croniter import croniter as _croniter
+
+            from omniagent.control_plane.db import get_conn
+
+            schedule_id = input_data.get("schedule_id")
+            cron_expr = input_data.get("cron_expr")
+            prompt = input_data.get("prompt")
+            await _emit_event(
+                session_id,
+                ToolCallEvent(
+                    tool=tool_name, input=input_data, harness=harness, skill_name="native"
+                ),
+            )
+            async with get_conn() as conn:
+                row = await (
+                    await conn.execute(
+                        "SELECT cron_expr, prompt FROM schedules WHERE id=%s AND agent_name=%s",
+                        (schedule_id, config.agent_name),
+                    )
+                ).fetchone()
+                if not row:
+                    raise RuntimeError(f"schedule {schedule_id!r} not found")
+                new_cron = cron_expr or row["cron_expr"]
+                new_prompt = prompt if prompt is not None else row["prompt"]
+                try:
+                    c = _croniter(new_cron)
+                    next_run = datetime.fromtimestamp(c.get_next(float), tz=UTC)
+                except Exception as exc:
+                    raise RuntimeError(f"invalid cron_expr {new_cron!r}: {exc}") from exc
+                await conn.execute(
+                    "UPDATE schedules SET cron_expr=%s, prompt=%s, next_run_at=%s WHERE id=%s AND agent_name=%s",
+                    (new_cron, new_prompt, next_run, schedule_id, config.agent_name),
+                )
+            result = {
+                "schedule_id": schedule_id,
+                "cron_expr": new_cron,
+                "next_run_at": next_run.isoformat(),
+            }
+            await _emit_event(
+                session_id,
+                ToolResultEvent(
+                    tool=tool_name,
+                    success=True,
+                    input=input_data,
+                    output=result,
+                    harness=harness,
+                    skill_name="native",
+                ),
+            )
+            return result
+
+        if tool_name == "native.schedule_delete":
+            from omniagent.control_plane.db import get_conn
+
+            schedule_id = input_data.get("schedule_id")
+            await _emit_event(
+                session_id,
+                ToolCallEvent(
+                    tool=tool_name, input=input_data, harness=harness, skill_name="native"
+                ),
+            )
+            async with get_conn() as conn, conn.transaction():
+                await conn.execute(
+                    "UPDATE sessions SET status='cancelled', updated_at=NOW() WHERE schedule_id=%s AND status='pending'",
+                    (schedule_id,),
+                )
+                res = await conn.execute(
+                    "DELETE FROM schedules WHERE id=%s AND agent_name=%s",
+                    (schedule_id, config.agent_name),
+                )
+                if res.rowcount == 0:
+                    raise RuntimeError(f"schedule {schedule_id!r} not found")
+            result = {"schedule_id": schedule_id, "deleted": True}
             await _emit_event(
                 session_id,
                 ToolResultEvent(
@@ -626,7 +736,6 @@ async def run_agent_job(session_id: str, payload: str) -> None:
             tool_name,
             input_data,
             tool_snapshot,
-            auth_context=auth_context,
             agent_name=config.agent_name,
         )
         await _emit_event(
@@ -705,15 +814,11 @@ async def _handle_defer(
     )
 
     serialized = json.dumps([m.model_dump() for m in new_history])
-    # Carry forward encrypted auth/llm context for the next turn
-    deferred_payload = json.dumps(
-        {"auth_context": data.get("auth_context"), "llm_context": data.get("llm_context")}
-    )
 
     async with get_conn() as conn:
         await conn.execute(
             "UPDATE sessions SET status='deferred', messages=%s, deferred_payload=%s, updated_at=NOW() WHERE id=%s",
-            (serialized, deferred_payload, session_id),
+            (serialized, "{}", session_id),
         )
 
     await _emit_event(session_id, BaseEvent(type="deferred"))
@@ -721,12 +826,6 @@ async def _handle_defer(
     scheduled_at = defer.scheduled_at()
     await run_agent_job.configure(queue="default", schedule_at=scheduled_at).defer_async(
         session_id=session_id,
-        payload=json.dumps(
-            {
-                "history": [m.model_dump() for m in new_history],
-                "auth_context": data.get("auth_context"),
-                "llm_context": data.get("llm_context"),
-            }
-        ),
+        payload=json.dumps({"history": [m.model_dump() for m in new_history]}),
     )
     logger.info("session %s deferred until %s", session_id, scheduled_at.isoformat())

@@ -3,7 +3,6 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
-from psycopg.types.json import Jsonb
 
 from omniagent.control_plane.auth import require_scope
 from omniagent.control_plane.crypto import encrypt_auth_context
@@ -36,19 +35,11 @@ async def create_schedule(
     async with get_conn() as conn:
         rows = await conn.execute(
             """INSERT INTO schedules
-               (agent_name, cron_expr, prompt, llm_context, auth_context, enabled, next_run_at)
-               VALUES (%s, %s, %s, %s, %s, %s, %s)
-               RETURNING id, agent_name, cron_expr, prompt, llm_context, enabled,
+               (agent_name, cron_expr, prompt, auth_context, enabled, next_run_at)
+               VALUES (%s, %s, %s, %s, %s, %s)
+               RETURNING id, agent_name, cron_expr, prompt, enabled,
                          last_run_at, next_run_at, created_at, updated_at""",
-            (
-                body.agent_name,
-                body.cron_expr,
-                body.prompt,
-                Jsonb(body.llm_context) if body.llm_context is not None else None,
-                encrypted_auth,
-                body.enabled,
-                next_run,
-            ),
+            (body.agent_name, body.cron_expr, body.prompt, encrypted_auth, body.enabled, next_run),
         )
         return ScheduleRecord.model_validate(dict(await rows.fetchone()))
 
@@ -57,7 +48,7 @@ async def create_schedule(
 async def list_schedules(_=Depends(require_scope("agents:read"))) -> list[ScheduleRecord]:
     async with get_conn() as conn:
         rows = await conn.execute(
-            "SELECT id, agent_name, cron_expr, prompt, llm_context, enabled, "
+            "SELECT id, agent_name, cron_expr, prompt, enabled, "
             "last_run_at, next_run_at, created_at, updated_at FROM schedules ORDER BY created_at DESC"
         )
         return [ScheduleRecord.model_validate(dict(r)) for r in await rows.fetchall()]
@@ -83,7 +74,7 @@ async def get_schedule(
 ) -> ScheduleRecord:
     async with get_conn() as conn:
         rows = await conn.execute(
-            "SELECT id, agent_name, cron_expr, prompt, llm_context, enabled, "
+            "SELECT id, agent_name, cron_expr, prompt, enabled, "
             "last_run_at, next_run_at, created_at, updated_at FROM schedules WHERE id = %s",
             (schedule_id,),
         )
@@ -108,9 +99,6 @@ async def update_schedule(
     if body.prompt is not None:
         sets.append("prompt=%s")
         vals.append(body.prompt)
-    if body.llm_context is not None:
-        sets.append("llm_context=%s")
-        vals.append(Jsonb(body.llm_context))
     if body.enabled is not None:
         sets.append("enabled=%s")
         vals.append(body.enabled)
@@ -123,7 +111,7 @@ async def update_schedule(
     async with get_conn() as conn:
         rows = await conn.execute(
             f"UPDATE schedules SET {', '.join(sets)} WHERE id=%s "
-            "RETURNING id, agent_name, cron_expr, prompt, llm_context, enabled, "
+            "RETURNING id, agent_name, cron_expr, prompt, enabled, "
             "last_run_at, next_run_at, created_at, updated_at",
             vals,
         )
@@ -152,5 +140,9 @@ async def list_schedule_runs(
 
 @router.delete("/{schedule_id}", status_code=204)
 async def delete_schedule(schedule_id: uuid.UUID, _=Depends(require_scope("agents:write"))) -> None:
-    async with get_conn() as conn:
+    async with get_conn() as conn, conn.transaction():
+        await conn.execute(
+            "UPDATE sessions SET status='cancelled', updated_at=NOW() WHERE schedule_id=%s AND status='pending'",
+            (schedule_id,),
+        )
         await conn.execute("DELETE FROM schedules WHERE id = %s", (schedule_id,))

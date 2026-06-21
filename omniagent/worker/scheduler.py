@@ -45,23 +45,34 @@ async def _fire_schedule(sched: dict) -> None:
 
     async with get_conn() as conn:
         rows = await conn.execute(
-            "SELECT name, version, skill_refs FROM agents WHERE name = %s ORDER BY created_at DESC LIMIT 1",
+            "SELECT name, version, toolbox_refs, tool_refs FROM agents WHERE name = %s ORDER BY created_at DESC LIMIT 1",
             (sched["agent_name"],),
         )
         agent = await rows.fetchone()
         if not agent:
             raise RuntimeError(f"agent not found: {sched['agent_name']}")
 
+        active = await (
+            await conn.execute(
+                "SELECT id FROM sessions WHERE schedule_id=%s AND status IN ('pending','running') LIMIT 1",
+                (sched["id"],),
+            )
+        ).fetchone()
+        if active:
+            logger.info("schedule %s: previous run still active, skipping", sched["id"])
+            return
+
         now = datetime.now(UTC).isoformat()
         messages = [{"role": "user", "content": sched["prompt"], "timestamp": now}]
 
         rows = await conn.execute(
-            """INSERT INTO sessions (agent_name, agent_version, skill_versions, status, messages, schedule_id, is_scheduled)
-               VALUES (%s, %s, %s, 'running', %s, %s, TRUE) RETURNING id""",
+            """INSERT INTO sessions (agent_name, agent_version, toolbox_versions, tool_refs, status, messages, schedule_id, is_scheduled)
+               VALUES (%s, %s, %s, %s, 'pending', %s, %s, TRUE) RETURNING id""",
             (
                 agent["name"],
                 agent["version"],
-                json.dumps(agent["skill_refs"] or {}),
+                json.dumps(agent["toolbox_refs"] or {}),
+                agent["tool_refs"] or [],
                 json.dumps(messages),
                 sched["id"],
             ),
@@ -72,12 +83,6 @@ async def _fire_schedule(sched: dict) -> None:
 
     await run_agent_job.configure(queue="default").defer_async(
         session_id=session_id,
-        payload=json.dumps(
-            {
-                "history": messages,
-                "auth_context": sched["auth_context"],  # already encrypted
-                "llm_context": sched["llm_context"],
-            }
-        ),
+        payload=json.dumps({"history": messages}),
     )
     logger.info("schedule %s: created session %s", sched["id"], session_id)
