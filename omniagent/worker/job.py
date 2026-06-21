@@ -716,6 +716,8 @@ async def _handle_defer(
             (serialized, deferred_payload, session_id),
         )
 
+    await _emit_event(session_id, BaseEvent(type="deferred"))
+
     scheduled_at = defer.scheduled_at()
     await run_agent_job.configure(queue="default", schedule_at=scheduled_at).defer_async(
         session_id=session_id,

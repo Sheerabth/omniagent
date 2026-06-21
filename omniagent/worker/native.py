@@ -37,11 +37,13 @@ NATIVE_TOOL_DESCRIPTIONS: dict[str, str] = {
     ),
     "native.defer_turn": (
         "Pause this session and resume after delay_seconds. "
-        "Use to wait between polling steps or to free the worker slot. "
+        "Use when you have a duration to wait (e.g. 'check again in 30 seconds'). "
         "After calling, write a brief status — the next turn receives a [RESUME] message."
     ),
     "native.defer_turn_until": (
-        "Pause this session and resume at a specific UTC time. "
+        "Pause this session and resume at a specific UTC timestamp. "
+        "Use when you have an absolute time to wait until (e.g. ready_at, alert_at, scheduled_at fields). "
+        "Prefer this over defer_turn when the API gives you an ISO timestamp. "
         "After calling, write a brief status — the next turn receives a [RESUME] message."
     ),
 }

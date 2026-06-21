@@ -1056,7 +1056,7 @@ async function switchToSession(id) {
   document.getElementById('chat-send').disabled = false;
   try {
     const status = await api('GET', '/sessions/' + id + '/status');
-    (status.messages || []).forEach(m => appendMsg(m.role, m.content));
+    (status.messages || []).filter(m => !m.content?.startsWith('[RESUME')).forEach(m => appendMsg(m.role, m.content));
     renderSidebar(status.tool_calls || []);
     if (status.status === 'running') {
       chatBusy = true;
@@ -1173,6 +1173,15 @@ function streamSession(sessionId) {
         const status = await api('GET', '/sessions/' + sessionId + '/status');
         renderSidebar(status.tool_calls || []);
       } catch(_) {}
+    } else if (ev.type === 'deferred') {
+      // Turn paused — reload history to show intermediate messages, SSE stays open
+      try {
+        const status = await api('GET', '/sessions/' + sessionId + '/status');
+        renderSidebar(status.tool_calls || []);
+        document.getElementById('chat-messages').innerHTML = '';
+        (status.messages || []).filter(m => !m.content?.startsWith('[RESUME')).forEach(m => appendMsg(m.role, m.content));
+        thinkingEl = appendThinking();
+      } catch(_) {}
     } else if (ev.type === 'complete') {
       removeThinking();
       chatSSE.close();
@@ -1181,7 +1190,8 @@ function streamSession(sessionId) {
       try {
         const status = await api('GET', '/sessions/' + sessionId + '/status');
         renderSidebar(status.tool_calls || []);
-        if (status.result != null) appendMsg('assistant', status.result);
+        document.getElementById('chat-messages').innerHTML = '';
+        (status.messages || []).filter(m => !m.content?.startsWith('[RESUME')).forEach(m => appendMsg(m.role, m.content));
       } catch(_) { appendMsg('assistant', '⚠ could not fetch result'); }
     } else if (ev.type === 'error') {
       removeThinking();

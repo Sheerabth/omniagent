@@ -8,6 +8,9 @@ Auth test credentials:
   oauth2       : client_id=test-client, client_secret=test-secret
 """
 
+import time
+import uuid
+
 import uvicorn
 from fastapi import FastAPI, Form, HTTPException, Security
 from fastapi.security import APIKeyHeader, APIKeyQuery, HTTPBasic, HTTPBasicCredentials, HTTPBearer
@@ -366,6 +369,126 @@ def _patched_openapi():
 
 
 app.openapi = _patched_openapi  # type: ignore
+
+
+# ── Daily weather tracker (schedule testing) ────────────────────────────────
+# Values cycle deterministically by day so a scheduled agent sees real changes.
+
+_DAILY_CONDITIONS = ["sunny", "cloudy", "rainy", "windy", "stormy", "foggy"]
+_DAILY_TEMPS = [28, 24, 18, 15, 12, 22, 26]
+
+
+@app.get("/weather/daily", summary="Get today's weather reading for a city (changes daily)")
+def get_daily_weather(city: str):
+    from datetime import date
+
+    day = date.today().toordinal()
+    cond = _DAILY_CONDITIONS[day % len(_DAILY_CONDITIONS)]
+    temp = _DAILY_TEMPS[day % len(_DAILY_TEMPS)]
+    return {
+        "city": city,
+        "date": date.today().isoformat(),
+        "temperature_c": temp,
+        "condition": cond,
+        "humidity_pct": 50 + (day % 40),
+        "wind_kmh": 10 + (day % 30),
+    }
+
+
+# ── Weather forecast report (defer_turn / defer_turn_until testing) ─────────
+# Simulates a slow forecast generation job (e.g. model run takes 30s).
+# POST /weather/forecast/request → job_id
+# GET  /weather/forecast/{job_id} → pending | done + 7-day forecast
+
+_forecast_jobs: dict[str, dict] = {}
+_FORECAST_CONDS = ["sunny", "cloudy", "rainy", "windy", "stormy", "foggy", "sunny"]
+
+
+@app.post(
+    "/weather/forecast/request", summary="Request a 7-day forecast report (takes time to generate)"
+)
+def request_forecast(city: str, duration_seconds: int = 30):
+    job_id = str(uuid.uuid4())
+    _forecast_jobs[job_id] = {"city": city, "started_at": time.time(), "duration": duration_seconds}
+    return {
+        "job_id": job_id,
+        "city": city,
+        "status": "pending",
+        "ready_in_seconds": duration_seconds,
+    }
+
+
+@app.get("/weather/forecast/{job_id}", summary="Get forecast report status and result")
+def get_forecast(job_id: str):
+    job = _forecast_jobs.get(job_id)
+    if not job:
+        raise HTTPException(404, "Forecast job not found")
+    elapsed = time.time() - job["started_at"]
+    if elapsed < job["duration"]:
+        return {
+            "job_id": job_id,
+            "status": "pending",
+            "remaining_seconds": round(job["duration"] - elapsed, 1),
+        }
+    from datetime import date, timedelta
+
+    base = date.today()
+    forecast = [
+        {
+            "date": (base + timedelta(days=i)).isoformat(),
+            "condition": _FORECAST_CONDS[i],
+            "high_c": 20 + i,
+            "low_c": 12 + i,
+        }
+        for i in range(7)
+    ]
+    return {"job_id": job_id, "city": job["city"], "status": "done", "forecast": forecast}
+
+
+# ── Weather alert (defer_turn_until testing) ────────────────────────────────
+# Simulates a weather alert that activates at a fixed scheduled UTC time
+# (next 2-minute boundary). Agent should use defer_turn_until(ready_at).
+
+_alert_subscriptions: dict[str, dict] = {}
+
+
+@app.post(
+    "/weather/alert/subscribe",
+    summary="Subscribe to next weather alert for a city (fires at a scheduled UTC time)",
+)
+def subscribe_alert(city: str):
+    from datetime import UTC, datetime, timedelta
+
+    now = datetime.now(UTC)
+    # next 2-minute boundary
+    minutes = (now.minute // 2 + 1) * 2
+    alert_at = now.replace(minute=0, second=0, microsecond=0) + timedelta(minutes=minutes)
+    sub_id = str(uuid.uuid4())
+    _alert_subscriptions[sub_id] = {"city": city, "alert_at": alert_at.timestamp()}
+    return {"subscription_id": sub_id, "city": city, "alert_at": alert_at.isoformat()}
+
+
+@app.get(
+    "/weather/alert/{subscription_id}", summary="Get weather alert (only available after alert_at)"
+)
+def get_alert(subscription_id: str):
+    sub = _alert_subscriptions.get(subscription_id)
+    if not sub:
+        raise HTTPException(404, "Subscription not found")
+    from datetime import UTC, datetime
+
+    if time.time() < sub["alert_at"]:
+        ready_at = datetime.fromtimestamp(sub["alert_at"], tz=UTC).isoformat()
+        return {"subscription_id": subscription_id, "status": "pending", "alert_at": ready_at}
+    day = int(sub["alert_at"]) % len(_DAILY_CONDITIONS)
+    return {
+        "subscription_id": subscription_id,
+        "city": sub["city"],
+        "status": "active",
+        "severity": "moderate",
+        "condition": _DAILY_CONDITIONS[day],
+        "message": f"Weather alert for {sub['city']}: {_DAILY_CONDITIONS[day]} conditions expected.",
+    }
 
 
 if __name__ == "__main__":

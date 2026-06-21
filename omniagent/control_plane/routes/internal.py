@@ -91,7 +91,7 @@ async def post_session_event(
                     await conn.execute("SELECT pg_notify(%s, %s)", (_CH(session_id), ntype))
     else:
         async with get_conn() as conn:
-            await conn.execute("SELECT pg_notify(%s, %s)", (_CH(session_id), ntype))
+            await conn.execute("SELECT pg_notify(%s, %s)", (_CH(session_id), body.type))
 
 
 async def _notify(session_id: uuid.UUID, ntype: str) -> None:
