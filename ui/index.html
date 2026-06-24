@@ -604,8 +604,8 @@ function renderNamespaces() {
   const byNs = {};
   allTools.forEach(t => { const ns = t.namespace || ''; (byNs[ns] = byNs[ns] || []).push(t); });
   el.innerHTML = Object.entries(byNs).map(([ns, tools]) => {
-    const info = allNamespaces.find(n => n.namespace === ns) || { auth_context_keys: [] };
-    const dot = info.auth_context_keys.length ? '<span style="color:#6fcf6f;margin-left:5px">●</span>' : '';
+    const info = allNamespaces.find(n => n.namespace === ns) || { schemes: [] };
+    const dot = info.schemes?.length ? '<span style="color:#6fcf6f;margin-left:5px">●</span>' : '';
     const sel = currentNamespace === ns ? 'border-left:2px solid #4f7ef8;background:#111' : '';
     return `<div class="item" style="${sel}" onclick="selectNamespace('${escHtml(ns)}')">
       <div class="name">${escHtml(ns)}${dot}</div>
@@ -634,9 +634,9 @@ function selectNamespace(ns) {
 
 function renderNamespacePanel(ns) {
   const nsTools = allTools.filter(t => t.namespace === ns);
-  const info = allNamespaces.find(n => n.namespace === ns) || { auth_context_keys: [] };
+  const info = allNamespaces.find(n => n.namespace === ns) || { schemes: [] };
   document.getElementById('ns-panel-name').textContent = ns;
-  renderAuthFields('ns-auth-fields', nsTools.map(t => t.name), null, info.auth_context_keys);
+  renderAuthFields('ns-auth-fields', nsTools.map(t => t.name), null, info.schemes);
   renderNamespaceOauth2(ns, nsTools.map(t => t.name));
 }
 
@@ -660,10 +660,19 @@ function renderNamespaceOauth2(ns, toolNames) {
 }
 
 async function saveNamespaceAuth() {
-  const auth_context = buildAuthContextFrom('ns-auth-fields');
-  if (!auth_context) { toast('No auth values entered', false); return; }
+  const groups = document.querySelectorAll('#ns-auth-fields [data-scheme-name]');
+  if (!groups.length) { toast('No auth schemes to save', false); return; }
   try {
-    await api('PUT', `/namespaces/auth/${encodeURIComponent(currentNamespace)}`, { auth_context });
+    for (const group of groups) {
+      const schemeName = group.dataset.schemeName;
+      const auth_context = {};
+      group.querySelectorAll('[data-auth-key]').forEach(el => {
+        if (el.value.trim()) auth_context[el.dataset.authKey] = el.value.trim();
+      });
+      if (Object.keys(auth_context).length) {
+        await api('PUT', `/namespaces/auth/${encodeURIComponent(currentNamespace)}/${encodeURIComponent(schemeName)}`, { auth_context });
+      }
+    }
     toast('Auth saved');
     allNamespaces = await api('GET', '/namespaces');
     renderNamespaces();
@@ -674,7 +683,10 @@ async function saveNamespaceAuth() {
 async function clearNamespaceAuth() {
   if (!confirm(`Clear auth for "${currentNamespace}"?`)) return;
   try {
-    await api('DELETE', `/namespaces/auth/${encodeURIComponent(currentNamespace)}`);
+    const info = allNamespaces.find(n => n.namespace === currentNamespace) || { schemes: [] };
+    await Promise.all(info.schemes.map(s =>
+      api('DELETE', `/namespaces/auth/${encodeURIComponent(currentNamespace)}/${encodeURIComponent(s.scheme_name)}`)
+    ));
     toast('Auth cleared');
     allNamespaces = await api('GET', '/namespaces');
     renderNamespaces();
@@ -704,7 +716,10 @@ async function deleteNamespace(ns) {
   if (!confirm(`Delete all tools in namespace "${ns}"?`)) return;
   try {
     await api('DELETE', '/tools/namespace/' + encodeURIComponent(ns));
-    await api('DELETE', '/namespaces/auth/' + encodeURIComponent(ns)).catch(() => {});
+    const nsInfo = allNamespaces.find(n => n.namespace === ns) || { schemes: [] };
+    await Promise.all(nsInfo.schemes.map(s =>
+      api('DELETE', `/namespaces/auth/${encodeURIComponent(ns)}/${encodeURIComponent(s.scheme_name)}`).catch(() => {})
+    ));
     toast('Namespace deleted');
     currentNamespace = null;
     await loadAll();
@@ -994,21 +1009,19 @@ function closeAgentForm() {
   _memAgentName = null;
 }
 
-function renderAuthFields(containerId, toolNames, existingAuth, authContextKeys = []) {
-  const configuredKeys = new Set(authContextKeys);
-  const secTools = allTools.filter(t => new Set(toolNames).has(t.name) && t.openapi_security);
+function renderAuthFields(containerId, toolNames, existingAuth, schemes = []) {
+  const schemeMap = Object.fromEntries((schemes || []).map(s => [s.scheme_name, new Set(s.auth_context_keys)]));
+  const secTools = allTools.filter(t => new Set(toolNames).has(t.name) && t.openapi_security?.scheme_name);
   const container = document.getElementById(containerId);
-  const seen = new Set();
+  const seenSchemes = new Set();
   const groups = [];
   secTools.forEach(t => {
     const sec = t.openapi_security;
+    const schemeName = sec.scheme_name;
+    if (seenSchemes.has(schemeName)) return;
+    seenSchemes.add(schemeName);
     const type = sec.type;
-    const pk = type === 'basic' ? sec.username_key
-              : (type === 'bearer' || type === 'apiKey') ? sec.token_key
-              : sec.client_id_key;
-    if (!pk || seen.has(pk)) return;
-    seen.add(pk);
-    const ns = t.namespace || t.name;
+    const configuredKeys = schemeMap[schemeName] || new Set();
     const v = k => escHtml(existingAuth?.[k] || '');
     const configured = k => configuredKeys.has(k);
     const ph = k => configured(k) ? 'leave blank to keep existing' : '';
@@ -1025,21 +1038,19 @@ function renderAuthFields(containerId, toolNames, existingAuth, authContextKeys 
     } else if (type === 'apiKey') {
       fields = `<label>${escHtml(sec.name)}${dot(sec.token_key)}<input type="password" data-auth-key="${escHtml(sec.token_key)}" value="${v(sec.token_key)}" placeholder="${ph(sec.token_key)}" autocomplete="new-password"></label>`;
     } else if (type === 'basic') {
-      seen.add(sec.password_key);
       fields = `<label>Username${dot(sec.username_key)}<input type="text" data-auth-key="${escHtml(sec.username_key)}" value="${v(sec.username_key)}" placeholder="${ph(sec.username_key)}" autocomplete="off"></label>
                 <label>Password${dot(sec.password_key)}<input type="password" data-auth-key="${escHtml(sec.password_key)}" value="${v(sec.password_key)}" placeholder="${ph(sec.password_key)}" autocomplete="new-password"></label>`;
     } else if (type === 'oauth2' || type === 'oidc') {
-      seen.add(sec.client_secret_key);
       fields = `<label>Client ID${dot(sec.client_id_key)}<input type="text" data-auth-key="${escHtml(sec.client_id_key)}" value="${v(sec.client_id_key)}" placeholder="${ph(sec.client_id_key)}" autocomplete="off"></label>
                 <label>Client Secret${dot(sec.client_secret_key)}<input type="password" data-auth-key="${escHtml(sec.client_secret_key)}" value="${v(sec.client_secret_key)}" placeholder="${ph(sec.client_secret_key)}" autocomplete="new-password"></label>`;
     }
-    groups.push(`<div class="auth-scheme-group">
-      <div class="auth-scheme-header"><span class="auth-scheme-ns">${escHtml(ns)}</span><span class="auth-type-badge">${escHtml(badge)}</span></div>
+    groups.push(`<div class="auth-scheme-group" data-scheme-name="${escHtml(schemeName)}">
+      <div class="auth-scheme-header"><span class="auth-scheme-ns">${escHtml(schemeName)}</span><span class="auth-type-badge">${escHtml(badge)}</span></div>
       ${fields}
     </div>`);
   });
-  container.innerHTML = groups.join('');
-  return seen;
+  container.innerHTML = groups.join('') || '<p style="color:#555;font-size:12px;margin:0">No auth schemes defined in this spec.</p>';
+  return seenSchemes;
 }
 
 function buildAuthContextFrom(containerId, rawOverride = null) {
@@ -1170,6 +1181,8 @@ async function loadSessions() {
   } catch(e) { /* no sessions endpoint yet */ }
 }
 
+setInterval(loadSessions, 5000);
+
 function renderSessions() {
   const raw = document.getElementById('chat-agent-select').value;
   if (!raw) return;
@@ -1273,7 +1286,8 @@ async function chatSend() {
     try {
       await api('POST', '/sessions/' + chatSessionId + '/resume', { message: text });
       const s = allSessions.find(s => s.id === chatSessionId);
-      if (s) { s.status = 'running'; renderSessions(); }
+      if (s) { s.status = 'pending'; renderSessions(); }
+      streamSession(chatSessionId);
     } catch(e) {
       removeThinking();
       appendMsg('assistant', '⚠ ' + e.message);
@@ -1287,7 +1301,7 @@ async function chatSend() {
   try {
     await api('POST', '/sessions/' + chatSessionId + '/run', { prompt: text });
     const s = allSessions.find(s => s.id === chatSessionId);
-    if (s) { s.status = 'running'; renderSessions(); }
+    if (s) { s.status = 'pending'; renderSessions(); }
     streamSession(chatSessionId);
   } catch(e) {
     removeThinking();
@@ -1380,6 +1394,13 @@ function streamSession(sessionId) {
       chatDeferred = false;
       _patchSessionStatus(sessionId, 'failed');
       appendMsg('assistant', '⚠ ' + (ev.reason || 'session failed'));
+      if (pendingMessage) { pendingMessage = null; }
+    } else if (ev.type === 'cancelled') {
+      removeThinking();
+      chatSSE.close();
+      setChatBusy(false);
+      chatDeferred = false;
+      _patchSessionStatus(sessionId, 'cancelled');
       if (pendingMessage) { pendingMessage = null; }
     }
   };

@@ -22,13 +22,6 @@ async def oauth2_connect(
     request: Request,
 ) -> RedirectResponse:
     async with get_conn() as conn:
-        auth_row = await (
-            await conn.execute(
-                "SELECT auth_context FROM namespace_auth WHERE namespace=%s", (namespace,)
-            )
-        ).fetchone()
-        auth_ctx: dict = decrypt_auth_context(auth_row["auth_context"]) if auth_row else {}
-
         tool_row = await (
             await conn.execute("SELECT openapi_security FROM tools WHERE name=%s", (tool_name,))
         ).fetchone()
@@ -38,6 +31,15 @@ async def oauth2_connect(
 
         if sec.get("type") != "oauth2" or not sec.get("authorization_url"):
             raise HTTPException(400, "Tool has no OAuth2 authorization code flow")
+
+        scheme_name: str = sec.get("scheme_name", "")
+        auth_row = await (
+            await conn.execute(
+                "SELECT auth_context FROM namespace_auth WHERE namespace=%s AND scheme_name=%s",
+                (namespace, scheme_name),
+            )
+        ).fetchone()
+        auth_ctx: dict = decrypt_auth_context(auth_row["auth_context"]) if auth_row else {}
 
         client_id_key = sec.get("client_id_key", "client_id")
         client_id = auth_ctx.get(client_id_key)
@@ -58,6 +60,7 @@ async def oauth2_connect(
                 json.dumps(
                     {
                         "namespace": namespace,
+                        "scheme_name": scheme_name,
                         "security": sec,
                         "auth_ctx": auth_ctx,
                         "redirect_uri": redirect_uri,
@@ -128,11 +131,11 @@ async def oauth2_callback(code: str, state: str) -> RedirectResponse:
 
     async with get_conn() as conn:
         await conn.execute(
-            """INSERT INTO namespace_auth (namespace, auth_context, updated_at)
-               VALUES (%s, %s, NOW())
-               ON CONFLICT (namespace) DO UPDATE
+            """INSERT INTO namespace_auth (namespace, scheme_name, auth_context, updated_at)
+               VALUES (%s, %s, %s, NOW())
+               ON CONFLICT (namespace, scheme_name) DO UPDATE
                  SET auth_context = EXCLUDED.auth_context, updated_at = NOW()""",
-            (entry["namespace"], encrypt_auth_context(new_ctx)),
+            (entry["namespace"], entry["scheme_name"], encrypt_auth_context(new_ctx)),
         )
 
     return RedirectResponse("/?oauth2=success")

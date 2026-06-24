@@ -79,11 +79,17 @@ def _resolve_security(sec_reqs: list, resolved_schemes: dict) -> dict | None:
     stype = scheme.get("type", "")
     if stype == "http":
         if scheme.get("scheme", "bearer").lower() == "basic":
-            return {"type": "basic", "username_key": "username", "password_key": "password"}
-        return {"type": "bearer", "token_key": "token"}
+            return {
+                "type": "basic",
+                "scheme_name": scheme_name,
+                "username_key": "username",
+                "password_key": "password",
+            }
+        return {"type": "bearer", "scheme_name": scheme_name, "token_key": "token"}
     if stype == "apiKey":
         return {
             "type": "apiKey",
+            "scheme_name": scheme_name,
             "in": scheme.get("in", "header"),
             "name": scheme.get("name", "X-Api-Key"),
             "token_key": scheme_name,
@@ -98,6 +104,7 @@ def _resolve_security(sec_reqs: list, resolved_schemes: dict) -> dict | None:
                 authorization_url = flow.get("authorizationUrl", "")
         result: dict[str, Any] = {
             "type": "oauth2",
+            "scheme_name": scheme_name,
             "token_url": token_url,
             "client_id_key": "client_id",
             "client_secret_key": "client_secret",
@@ -110,6 +117,7 @@ def _resolve_security(sec_reqs: list, resolved_schemes: dict) -> dict | None:
     if stype == "openIdConnect":
         return {
             "type": "oidc",
+            "scheme_name": scheme_name,
             "openid_connect_url": scheme.get("openIdConnectUrl", ""),
             "client_id_key": "client_id",
             "client_secret_key": "client_secret",

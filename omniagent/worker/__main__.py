@@ -24,9 +24,10 @@ async def main() -> None:
     await run_migrations(os.environ["DATABASE_URL"])
     await init_pool()
 
-    logger.info("Worker starting, polling queue 'default'")
+    concurrency = int(os.environ.get("WORKER_CONCURRENCY", "10"))
+    logger.info("Worker starting, polling queue 'default', concurrency=%d", concurrency)
     async with app.open_async():
-        worker = Worker(app, queues=["default"])
+        worker = Worker(app, queues=["default"], concurrency=concurrency)
         await worker.run()
 
     await close_pool()

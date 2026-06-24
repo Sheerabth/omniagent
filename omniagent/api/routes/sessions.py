@@ -81,7 +81,7 @@ async def run_session(
         rows = await conn.execute(
             """
             UPDATE sessions
-            SET status = 'running', messages = %s, updated_at = NOW()
+            SET status = 'pending', messages = %s, updated_at = NOW()
             WHERE id = %s AND status IN ('idle', 'failed', 'cancelled')
             RETURNING id
             """,
@@ -94,7 +94,6 @@ async def run_session(
 
         await run_agent_job.configure(queue="default").defer_async(
             session_id=str(session_id),
-            payload=json.dumps({"history": messages}, default=str),
         )
 
     return JSONResponse({"session_id": str(session_id)}, status_code=202)
@@ -124,7 +123,7 @@ async def resume_session(
         )
 
         rows = await conn.execute(
-            """UPDATE sessions SET status='running', messages=%s, updated_at=NOW()
+            """UPDATE sessions SET status='pending', messages=%s, updated_at=NOW()
                WHERE id=%s AND status='deferred' RETURNING id""",
             (json.dumps(messages), session_id),
         )
@@ -135,7 +134,6 @@ async def resume_session(
 
         await run_agent_job.configure(queue="default").defer_async(
             session_id=str(session_id),
-            payload=json.dumps({"history": messages}),
         )
 
     return JSONResponse({"session_id": str(session_id)}, status_code=202)
@@ -158,7 +156,7 @@ async def cancel_session(session_id: uuid.UUID, _=Depends(require_scope("session
             "UPDATE sessions SET status='cancelled', updated_at=NOW() WHERE id=%s AND status IN ('running','pending','deferred')",
             (session_id,),
         )
-        await conn.execute("SELECT pg_notify(%s, %s)", (ch, "error"))
+        await conn.execute("SELECT pg_notify(%s, %s)", (ch, "cancelled"))
 
 
 @router.delete("/{session_id}", status_code=204)

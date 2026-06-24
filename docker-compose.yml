@@ -5,6 +5,8 @@ services:
       POSTGRES_DB: omniagent
       POSTGRES_USER: omniagent
       POSTGRES_PASSWORD: omniagent
+    ports:
+      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:

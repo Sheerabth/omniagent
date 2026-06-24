@@ -101,16 +101,26 @@ async def _fetch_session_config(session_id: str) -> SessionConfig:
             for tool in await rows.fetchall():
                 tool_rows[tool["name"]] = tool
 
-        # Batch-fetch namespace auth for all namespaces in one query
-        all_namespaces = list({t["namespace"] for t in tool_rows.values() if t.get("namespace")})
-        ns_auth: dict[str, Any] = {}
-        if all_namespaces:
+        # Batch-fetch auth by (namespace, scheme_name) pairs
+        ns_scheme_pairs = list(
+            {
+                (t["namespace"], (t["openapi_security"] or {}).get("scheme_name", ""))
+                for t in tool_rows.values()
+                if t.get("namespace") and t.get("openapi_security")
+            }
+        )
+        ns_auth: dict[tuple[str, str], Any] = {}
+        if ns_scheme_pairs:
+            namespaces = list({p[0] for p in ns_scheme_pairs})
             rows = await conn.execute(
-                "SELECT namespace, auth_context FROM namespace_auth WHERE namespace = ANY(%s)",
-                (all_namespaces,),
+                "SELECT namespace, scheme_name, auth_context FROM namespace_auth WHERE namespace = ANY(%s)",
+                (namespaces,),
             )
+            ns_scheme_set = set(ns_scheme_pairs)
             for r in await rows.fetchall():
-                ns_auth[r["namespace"]] = decrypt_auth_context(r["auth_context"])
+                pair = (r["namespace"], r["scheme_name"])
+                if pair in ns_scheme_set:
+                    ns_auth[pair] = decrypt_auth_context(r["auth_context"])
 
         # Build tool_snapshot — toolbox tools first (take precedence over direct refs)
         tool_snapshot: dict[str, ToolSnapshot] = {}
@@ -128,7 +138,9 @@ async def _fetch_session_config(session_id: str) -> SessionConfig:
                     openapi_security=tool["openapi_security"],
                     timeout=tool["timeout"],
                     skill_name=tool_to_toolbox.get(name, ""),
-                    auth_context=ns_auth.get(tool["namespace"]),
+                    auth_context=ns_auth.get(
+                        (tool["namespace"], (tool["openapi_security"] or {}).get("scheme_name", ""))
+                    ),
                 )
 
     return SessionConfig(
@@ -459,15 +471,12 @@ def _make_native_tool_snapshot(name: str) -> ToolSnapshot:
 
 
 @app.task(name="run_agent_job", queue="default")
-async def run_agent_job(session_id: str, payload: str) -> None:
+async def run_agent_job(session_id: str) -> None:
     from omniagent.api.db import get_conn
-
-    data = json.loads(payload)
-    history = [MessageRecord.model_validate(m) for m in data.get("history", [])]
 
     async with get_conn() as conn:
         row = await (
-            await conn.execute("SELECT status FROM sessions WHERE id=%s", (session_id,))
+            await conn.execute("SELECT status, messages FROM sessions WHERE id=%s", (session_id,))
         ).fetchone()
         if not row:
             logger.warning("run_agent_job: session %s not found, skipping", session_id)
@@ -475,6 +484,7 @@ async def run_agent_job(session_id: str, payload: str) -> None:
         if row["status"] == "cancelled":
             logger.info("run_agent_job: session %s cancelled, skipping", session_id)
             return
+        history = [MessageRecord.model_validate(m) for m in (row["messages"] or [])]
         if row["status"] in ("pending", "deferred"):
             was_deferred = row["status"] == "deferred"
             await conn.execute(
@@ -831,7 +841,7 @@ async def run_agent_job(session_id: str, payload: str) -> None:
         )
 
         if defer := _defer_state.get("info"):
-            await _handle_defer(session_id, result, history, data, defer)
+            await _handle_defer(session_id, result, history, defer)
         else:
             await _complete_session(session_id, result)
 
@@ -845,10 +855,8 @@ async def _handle_defer(
     session_id: str,
     result: str,
     history: list[MessageRecord],
-    data: dict[str, Any],
     defer: DeferInfo,
 ) -> None:
-    """Save deferred state and schedule next turn."""
     from omniagent.api.db import get_conn
 
     now = datetime.now(UTC).isoformat()
@@ -873,6 +881,5 @@ async def _handle_defer(
     scheduled_at = defer.scheduled_at()
     await run_agent_job.configure(queue="default", schedule_at=scheduled_at).defer_async(
         session_id=session_id,
-        payload=json.dumps({"history": [m.model_dump() for m in new_history]}),
     )
     logger.info("session %s deferred until %s", session_id, scheduled_at.isoformat())

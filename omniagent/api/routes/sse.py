@@ -44,8 +44,8 @@ async def stream_session(
                     )
                     current = await rows.fetchone()
 
-                if current and current["status"] in ("idle", "failed"):
-                    ntype = "complete" if current["status"] == "idle" else "error"
+                if current and current["status"] in ("idle", "failed", "cancelled"):
+                    ntype = "complete" if current["status"] == "idle" else current["status"]
                     yield {"data": json.dumps({"type": ntype})}
                     return
 
@@ -54,7 +54,7 @@ async def stream_session(
                         async for notify in pg.notifies():
                             ntype = notify.payload or "update"
                             yield {"data": json.dumps({"type": ntype})}
-                            if ntype in ("complete", "error"):
+                            if ntype in ("complete", "error", "cancelled"):
                                 break
                 except TimeoutError:
                     yield {"data": json.dumps({"type": "error", "reason": "session timeout"})}

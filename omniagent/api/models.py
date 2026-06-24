@@ -48,10 +48,15 @@ class NamespaceAuthSet(BaseModel):
     auth_context: Any
 
 
+class SchemeRecord(BaseModel):
+    scheme_name: str
+    auth_context_keys: list[str] = []
+
+
 class NamespaceRecord(BaseModel):
     namespace: str
     tool_count: int
-    auth_context_keys: list[str] = []
+    schemes: list[SchemeRecord] = []
 
 
 # ── Agents ─────────────────────────────────────────────────────────────────

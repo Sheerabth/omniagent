@@ -83,6 +83,5 @@ async def _fire_schedule(sched: dict) -> None:
 
     await run_agent_job.configure(queue="default").defer_async(
         session_id=session_id,
-        payload=json.dumps({"history": messages}),
     )
     logger.info("schedule %s: created session %s", sched["id"], session_id)
