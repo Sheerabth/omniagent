@@ -21,8 +21,8 @@ services:
       dockerfile: Dockerfile.api
     environment:
       DATABASE_URL: postgresql://omniagent:omniagent@postgres/omniagent
-      OMNIAGENT_API_KEY: ${OMNIAGENT_API_KEY:-}
       OMNIAGENT_ENCRYPTION_KEY: ${OMNIAGENT_ENCRYPTION_KEY:-}
+      UI_PASSWORD: ${UI_PASSWORD:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -42,6 +42,7 @@ services:
       OMNIAGENT_CLAUDE_API_KEY: ${OMNIAGENT_CLAUDE_API_KEY:-}
       OMNIAGENT_ANTIGRAVITY_API_KEY: ${OMNIAGENT_ANTIGRAVITY_API_KEY:-}
       OMNIAGENT_ENCRYPTION_KEY: ${OMNIAGENT_ENCRYPTION_KEY:-}
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:

@@ -129,7 +129,7 @@ cp .env.example .env
 |---|---|---|
 | `DATABASE_URL` | ✅ | `postgresql://omniagent:omniagent@localhost:5432/omniagent` |
 | `OMNIAGENT_INTERNAL_KEY` | ✅ | Shared secret for CP ↔ Worker + Worker → Service JWT assertion |
-| `OMNIAGENT_API_KEY` | — | API key for services and external UIs (generate via `/settings/api-keys`) |
+| `UI_PASSWORD` | ✅ | Admin password for the web UI |
 | `OMNIAGENT_{HARNESS}_API_KEY` | — | LLM API key per harness, e.g. `OMNIAGENT_CLAUDE_API_KEY`, `OMNIAGENT_ANTIGRAVITY_API_KEY` |
 | `OMNIAGENT_CONTROL_PLANE` | — | URL the worker uses to reach the control plane (default: `http://localhost:8080`) |
 | `MAX_HISTORY_TURNS` | — | Conversation history limit (default: `50`) |
@@ -145,7 +145,7 @@ uv run uvicorn omniagent.api.main:app --host 0.0.0.0 --port 8080
 
 API docs at `http://localhost:8080/docs`. UI at `http://localhost:8080/`.
 
-> **Bootstrap:** on first start, the control plane seeds a built-in UI key from `OMNIAGENT_API_KEY` into the `api_keys` table. The UI auto-authenticates — no manual setup. Create additional API keys for services or external UIs via the Settings tab.
+> **Auth:** set `UI_PASSWORD` before starting. The web UI requires a password login — session cookie is HTTP-only. Create API keys for services or external UIs via the Settings tab.
 
 ### 5. Start workers
 

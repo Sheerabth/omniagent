@@ -11,7 +11,7 @@ router = APIRouter(prefix="/namespaces", tags=["namespaces"])
 
 
 @router.get("", response_model=list[NamespaceRecord])
-async def list_namespaces(_=Depends(require_scope("tools:read"))) -> list[NamespaceRecord]:
+async def list_namespaces(_=Depends(require_scope("auth:read"))) -> list[NamespaceRecord]:
     async with get_conn() as conn:
         tool_rows = await (
             await conn.execute(
@@ -51,7 +51,7 @@ async def set_namespace_auth(
     namespace: str,
     scheme_name: str,
     body: NamespaceAuthSet,
-    _=Depends(require_scope("tools:write")),
+    _=Depends(require_scope("auth:write")),
 ) -> SchemeRecord:
     async with get_conn() as conn:
         count_row = await (
@@ -84,7 +84,7 @@ async def set_namespace_auth(
 async def clear_namespace_auth(
     namespace: str,
     scheme_name: str,
-    _=Depends(require_scope("tools:write")),
+    _=Depends(require_scope("auth:write")),
 ) -> None:
     async with get_conn() as conn:
         await conn.execute(

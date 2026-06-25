@@ -66,7 +66,7 @@ uv run pytest
 |---|---|---|
 | `DATABASE_URL` | yes | PostgreSQL DSN |
 | `OMNIAGENT_ENCRYPTION_KEY` | yes | Fernet key for auth_context encryption. See `.env.example` |
-| `OMNIAGENT_API_KEY` | no | Fixed UI API key. Auto-generated + printed on startup if unset |
+| `UI_PASSWORD` | yes | Admin password for the web UI |
 | `OMNIAGENT_CLAUDE_API_KEY` | no | Anthropic API key (Claude harness) |
 | `OMNIAGENT_ANTIGRAVITY_API_KEY` | no | Antigravity API key |
 | `MAX_HISTORY_TURNS` | no | Default `50` |

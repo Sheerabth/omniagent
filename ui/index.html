@@ -397,6 +397,8 @@
         <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:#888;cursor:pointer"><input type="checkbox" value="tools:write" style="width:auto"> tools:write — import &amp; delete tools</label>
         <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:#888;cursor:pointer"><input type="checkbox" value="toolboxes:read" style="width:auto"> toolboxes:read — list toolboxes</label>
         <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:#888;cursor:pointer"><input type="checkbox" value="toolboxes:write" style="width:auto"> toolboxes:write — create &amp; delete toolboxes</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:#888;cursor:pointer"><input type="checkbox" value="auth:read" style="width:auto"> auth:read — view namespace auth</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:#888;cursor:pointer"><input type="checkbox" value="auth:write" style="width:auto"> auth:write — configure namespace auth &amp; OAuth2</label>
         <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:#888;cursor:pointer"><input type="checkbox" value="keys:manage" style="width:auto"> keys:manage — create &amp; delete API keys</label>
       </div>
       <div class="btn-row">
@@ -438,7 +440,9 @@ let currentTab = 'tools';
 const UI_API_KEY = document.querySelector('meta[name="omniagent-api-key"]')?.content || '';
 
 function headers() {
-  return { 'Content-Type': 'application/json', 'X-OmniAgent-Key': UI_API_KEY };
+  const h = { 'Content-Type': 'application/json' };
+  if (UI_API_KEY) h['X-OmniAgent-Key'] = UI_API_KEY;
+  return h;
 }
 
 async function api(method, path, body) {
@@ -446,6 +450,7 @@ async function api(method, path, body) {
     method, headers: headers(),
     body: body ? JSON.stringify(body) : undefined,
   });
+  if (r.status === 401) { location.href = '/login'; return null; }
   if (r.status === 204) return null;
   const data = await r.json();
   if (!r.ok) throw new Error(data.detail || r.statusText);
@@ -473,12 +478,12 @@ function switchTab(tab) {
 
 async function loadAll() {
   try {
-    [allTools, allToolboxes, allAgents, allNamespaces] = await Promise.all([
+    [allTools, allToolboxes, allAgents, allNamespaces] = (await Promise.all([
       api('GET', '/tools'),
       api('GET', '/toolboxes'),
       api('GET', '/agents'),
       api('GET', '/namespaces'),
-    ]);
+    ])).map(r => r || []);
     renderNamespaces(); renderToolboxes(); renderAgents(); renderChatAgents();
     if (currentNamespace && allTools.some(t => t.namespace === currentNamespace)) {
       selectNamespace(currentNamespace);
@@ -495,7 +500,7 @@ async function loadAll() {
 
 async function loadApiKeys() {
   try {
-    allApiKeys = await api('GET', '/settings/api-keys');
+    allApiKeys = await api('GET', '/settings/api-keys') || [];
     renderApiKeys();
   } catch(e) {
     toast('Load failed: ' + e.message, false);
@@ -774,7 +779,7 @@ async function doImportOpenAPI() {
   const res = await api('POST', '/tools/import-openapi', { spec, namespace, base_url: baseUrl });
   resultEl.style.display = 'block';
   resultEl.textContent = `Imported ${res.imported} tools: ${res.tools.join(', ')}`;
-  [allTools, allNamespaces] = await Promise.all([api('GET', '/tools'), api('GET', '/namespaces')]);
+  [allTools, allNamespaces] = (await Promise.all([api('GET', '/tools'), api('GET', '/namespaces')])).map(r => r || []);
   renderNamespaces();
   renderToolCheckboxes('toolbox-tools-checkboxes', []);
   selectNamespace(namespace);

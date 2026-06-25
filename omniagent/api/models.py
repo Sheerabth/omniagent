@@ -152,6 +152,8 @@ VALID_SCOPES = {
     "tools:write",
     "toolboxes:read",
     "toolboxes:write",
+    "auth:read",
+    "auth:write",
     "agents:read",
     "agents:write",
     "sessions:read",

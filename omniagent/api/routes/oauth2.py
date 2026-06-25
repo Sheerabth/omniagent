@@ -6,9 +6,10 @@ import urllib.parse
 from datetime import UTC, datetime, timedelta
 
 import httpx
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
+from omniagent.api.auth import require_scope
 from omniagent.api.crypto import decrypt_auth_context, encrypt_auth_context
 from omniagent.api.db import get_conn
 
@@ -20,6 +21,7 @@ async def oauth2_connect(
     namespace: str,
     tool_name: str,
     request: Request,
+    _=Depends(require_scope("auth:write")),
 ) -> RedirectResponse:
     async with get_conn() as conn:
         tool_row = await (
