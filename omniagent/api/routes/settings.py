@@ -29,6 +29,7 @@ async def create_api_key(
             (body.name, key_hash, key_prefix, body.scopes),
         )
         row = await rows.fetchone()
+        assert row is not None, "INSERT RETURNING returned no row"
     return ApiKeyResponse(
         id=row["id"],
         name=row["name"],

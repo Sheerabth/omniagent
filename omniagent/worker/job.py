@@ -236,11 +236,11 @@ async def _get_oauth_token(security: dict, auth_context: dict) -> str:
 
 
 async def _tool_executor(
-    session_id: str,
+    _session_id: str,
     tool_name: str,
     input_data: dict[str, Any],
     tool_snapshot: dict[str, ToolSnapshot],
-    agent_name: str = "",
+    _agent_name: str = "",
 ) -> Any:
     tool = tool_snapshot.get(tool_name)
     if not tool:
@@ -565,7 +565,7 @@ async def run_agent_job(session_id: str) -> None:
     # Langfuse trace — wraps the entire turn with nested generations and spans.
     last_user = history[-1].content if history and history[-1].role == "user" else None
     trace = (
-        _langfuse.trace(
+        _langfuse.trace(  # pyright: ignore[reportAttributeAccessIssue, reportOptionalMemberAccess]
             name=config.agent_name,
             session_id=session_id,
             user_id=config.agent_name,
@@ -593,6 +593,7 @@ async def run_agent_job(session_id: str) -> None:
                 ),
             )
             async with get_conn() as conn:
+                result: Any = None
                 if tool_name == "native.memory_get":
                     rows = await conn.execute(
                         "SELECT value FROM agent_memory WHERE agent_name=%s AND key=%s",
@@ -651,7 +652,7 @@ async def run_agent_job(session_id: str) -> None:
                     "SELECT id, cron_expr, prompt, enabled, next_run_at FROM schedules WHERE agent_name=%s ORDER BY created_at DESC",
                     (config.agent_name,),
                 )
-                result = [
+                result: Any = [
                     {
                         "schedule_id": str(r["id"]),
                         "cron_expr": r["cron_expr"],
@@ -699,7 +700,9 @@ async def run_agent_job(session_id: str) -> None:
                        VALUES (%s, %s, %s, %s) RETURNING id""",
                     (target_agent, cron_expr, prompt, next_run),
                 )
-                schedule_id = str((await rows.fetchone())["id"])
+                schedule_row = await rows.fetchone()
+                assert schedule_row is not None, "INSERT RETURNING returned no row"
+                schedule_id = str(schedule_row["id"])
             result = {"schedule_id": schedule_id, "next_run_at": next_run.isoformat()}
             await _emit_event(
                 session_id,
@@ -865,7 +868,7 @@ async def run_agent_job(session_id: str) -> None:
             tool_name,
             input_data,
             tool_snapshot,
-            agent_name=config.agent_name,
+            _agent_name=config.agent_name,
         )
         await _emit_event(
             session_id,

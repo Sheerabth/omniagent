@@ -85,7 +85,7 @@ class AntigravityAdapter(HarnessAdapter):
         self,
         tool_snapshot: dict[str, ToolSnapshot],
         tool_executor: ToolExecutor,
-        emit_event: EventEmitter,
+        _emit_event: EventEmitter,
     ) -> list[AntigravityTool]:
         return [
             _make_tool_fn(name, schema, tool_executor) for name, schema in tool_snapshot.items()
@@ -123,7 +123,7 @@ def _make_tool_fn(
         ann = _TYPE_MAP.get(props[p].get("type", "string"), str)
         params.append(inspect.Parameter(p, inspect.Parameter.POSITIONAL_OR_KEYWORD, annotation=ann))
 
-    tool_fn.__signature__ = inspect.Signature(params)
+    object.__setattr__(tool_fn, "__signature__", inspect.Signature(params))
     tool_fn.__name__ = _safe_name(tool_name)
     tool_fn.__doc__ = schema.description
     return tool_fn
@@ -148,7 +148,7 @@ async def _extract_text(response: Any) -> str:
     and falls back to str() with a logged warning for unexpected types.
     """
     if hasattr(response, "text") and callable(response.text):
-        return await response.text()
+        return await response.text()  # pyright: ignore[reportGeneralTypeIssues]
     if hasattr(response, "content"):
         c = response.content
         if isinstance(c, str):

@@ -50,7 +50,9 @@ async def create_session(
             """,
             (body.agent_name, agent["version"], json.dumps(toolbox_versions), tool_refs),
         )
-        return SessionRecord.model_validate(dict(await rows.fetchone()))
+        row = await rows.fetchone()
+        assert row is not None
+        return SessionRecord.model_validate(row)
 
 
 @router.post("/{session_id}/run", status_code=202)

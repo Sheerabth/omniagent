@@ -41,7 +41,9 @@ async def create_schedule(
                          last_run_at, next_run_at, created_at, updated_at""",
             (body.agent_name, body.cron_expr, body.prompt, encrypted_auth, body.enabled, next_run),
         )
-        return ScheduleRecord.model_validate(dict(await rows.fetchone()))
+        row = await rows.fetchone()
+        assert row is not None
+        return ScheduleRecord.model_validate(row)
 
 
 @router.get("", response_model=list[ScheduleRecord])

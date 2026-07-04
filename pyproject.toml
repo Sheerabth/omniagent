@@ -61,6 +61,7 @@ dev = [
     "isort",
     "ruff",
     "pre-commit",
+    "pyright>=1.1.411",
 ]
 
 [tool.black]

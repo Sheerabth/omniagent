@@ -1,0 +1,5 @@
+{
+  "typeCheckingMode": "standard",
+  "include": ["omniagent"],
+  "exclude": [".venv", "__pycache__", ".mypy_cache", ".ruff_cache"]
+}

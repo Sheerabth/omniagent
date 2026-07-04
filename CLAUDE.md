@@ -15,6 +15,10 @@ Never use `@dataclass` for data that crosses module boundaries. Use Pydantic `Ba
 
 Plain `dict` params are only acceptable at framework boundaries (e.g. FastAPI path/query params). Internal functions must use Pydantic models.
 
+## Dependencies
+
+Use `uv add --dev <package>` for dev tools. Never `pip install` directly — it bypasses `pyproject.toml` and `uv.lock`.
+
 ## After Changes
 
 After making code changes, run:

@@ -14,11 +14,18 @@ repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.15.17
     hooks:
-      - id: ruff
+      - id: ruff-check
         args: ["--fix"]
 
   - repo: local
     hooks:
+      - id: pyright
+        name: pyright
+        entry: uv run pyright omniagent/
+        language: system
+        pass_filenames: false
+        always_run: true
+
       - id: pip-audit
         name: pip-audit
         entry: uv run pip-audit

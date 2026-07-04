@@ -1,11 +1,10 @@
 import json
 import logging
 
-import psycopg
 from fastapi import APIRouter, Depends, HTTPException
 
 from omniagent.api.auth import require_scope
-from omniagent.api.db import get_conn
+from omniagent.api.db import DictConn, get_conn
 from omniagent.api.models import AgentCreate, AgentRecord
 
 logger = logging.getLogger(__name__)
@@ -15,9 +14,7 @@ router = APIRouter(prefix="/agents", tags=["agents"])
 VALID_HARNESSES = {"claude", "antigravity"}
 
 
-async def _validate_toolbox_refs(
-    conn: psycopg.AsyncConnection, toolbox_refs: dict[str, str]
-) -> None:
+async def _validate_toolbox_refs(conn: DictConn, toolbox_refs: dict[str, str]) -> None:
     for toolbox_name, toolbox_version in toolbox_refs.items():
         rows = await conn.execute(
             "SELECT id FROM toolboxes WHERE name = %s AND version = %s",
@@ -27,7 +24,7 @@ async def _validate_toolbox_refs(
             raise HTTPException(400, detail=f"Toolbox not found: {toolbox_name}:{toolbox_version}")
 
 
-async def _validate_tool_refs(conn: psycopg.AsyncConnection, tool_refs: list[str]) -> None:
+async def _validate_tool_refs(conn: DictConn, tool_refs: list[str]) -> None:
     for tool_name in tool_refs:
         rows = await conn.execute("SELECT name FROM tools WHERE name = %s", (tool_name,))
         if not await rows.fetchone():
@@ -66,7 +63,9 @@ async def create_agent(body: AgentCreate, _=Depends(require_scope("agents:write"
                 body.use_monty,
             ),
         )
-        return AgentRecord.model_validate(dict(await rows.fetchone()))
+        row = await rows.fetchone()
+        assert row is not None
+        return AgentRecord.model_validate(row)
 
 
 @router.get("", response_model=list[AgentRecord])

@@ -60,7 +60,7 @@ async def run_migrations(dsn: str) -> None:
                     sql = f.read()
                 logger.info("Applying migration: %s", filename)
                 async with conn.transaction():
-                    await conn.execute(sql)
+                    await conn.execute(sql)  # pyright: ignore[reportCallIssue, reportArgumentType]
                     await conn.execute(
                         "INSERT INTO schema_migrations (filename) VALUES (%s) ON CONFLICT DO NOTHING",
                         (filename,),

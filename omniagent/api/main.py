@@ -4,7 +4,7 @@ import logging
 import os
 import time
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, Response
@@ -51,7 +51,8 @@ async def _reconcile_stuck_sessions() -> None:
     async with db.get_conn() as conn:
         # Advisory lock prevents race when multiple CP instances start simultaneously
         locked = await conn.execute("SELECT pg_try_advisory_lock(hashtext('omniagent_reconcile'))")
-        if not (await locked.fetchone())["pg_try_advisory_lock"]:
+        lock_row = await locked.fetchone()
+        if not lock_row or not lock_row["pg_try_advisory_lock"]:
             logger.info("reconcile: another instance holds lock, skipping")
             return
         try:
@@ -74,7 +75,7 @@ async def _reconcile_stuck_sessions() -> None:
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     from omniagent.api import sse_hub
     from omniagent.api.migrations import run_migrations
     from omniagent.config import settings
@@ -102,11 +103,11 @@ async def trace_and_metrics(request: Request, call_next):
     trace_id = request.headers.get("X-Trace-Id", str(uuid.uuid4()))
     token = trace_id_var.set(trace_id)
     start = time.monotonic()
+    status = "500"
     try:
         response = await call_next(request)
         status = str(response.status_code)
     except Exception:
-        status = "500"
         raise
     finally:
         route = request.scope.get("route")
@@ -154,7 +155,7 @@ if(r.ok){location.href='/'}else{document.getElementById('err').style.display='bl
 
 
 @app.get("/login", include_in_schema=False)
-async def login_page(request: Request) -> HTMLResponse:
+async def login_page(request: Request) -> Response:
     from omniagent.api.routes.auth import validate_session
 
     if validate_session(request):
@@ -163,7 +164,7 @@ async def login_page(request: Request) -> HTMLResponse:
 
 
 @app.get("/", include_in_schema=False)
-async def ui(request: Request) -> HTMLResponse:
+async def ui(request: Request) -> Response:
     from omniagent.api.routes.auth import validate_session
     from omniagent.config import settings
 

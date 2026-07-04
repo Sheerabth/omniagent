@@ -87,7 +87,9 @@ async def _fire_schedule(sched: _ScheduleRow) -> None:
                 sched.id,
             ),
         )
-        session_id = str((await rows.fetchone())["id"])
+        session_row = await rows.fetchone()
+        assert session_row is not None, "INSERT RETURNING returned no row"
+        session_id = str(session_row["id"])
 
     from omniagent.worker.job import run_agent_job
 

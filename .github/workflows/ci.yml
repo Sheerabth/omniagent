@@ -17,10 +17,11 @@ jobs:
         with:
           version: "latest"
       - run: uv sync --frozen
-      - run: uv run pip-audit
-      - run: uv run ruff check .
       - run: uv run black --check .
       - run: uv run isort --check .
+      - run: uv run ruff check .
+      - run: uv run pyright omniagent/
+      - run: uv run pip-audit
 
   docker-build:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'

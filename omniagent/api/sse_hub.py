@@ -69,7 +69,9 @@ async def _supervisor() -> None:
         try:
             _conn = await psycopg.AsyncConnection.connect(dsn, autocommit=True)
             for channel in list(_subscribers):
-                await _conn.execute(f"LISTEN {channel}")
+                # fmt: off
+                await _conn.execute(f"LISTEN {channel}")  # pyright: ignore[reportCallIssue, reportArgumentType]
+                # fmt: on
             backoff = 1
             while not _stopped:
                 async for notify in _conn.notifies(timeout=_POLL_INTERVAL):
@@ -80,7 +82,9 @@ async def _supervisor() -> None:
                 while not _pending.empty():
                     action, channel, done = _pending.get_nowait()
                     try:
-                        await _conn.execute(f"{action} {channel}")
+                        # fmt: off
+                        await _conn.execute(f"{action} {channel}")  # pyright: ignore[reportCallIssue, reportArgumentType]
+                        # fmt: on
                     finally:
                         done.set()
         except asyncio.CancelledError:

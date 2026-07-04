@@ -1,14 +1,13 @@
-import psycopg
 from fastapi import APIRouter, Depends, HTTPException
 
 from omniagent.api.auth import require_scope
-from omniagent.api.db import get_conn
+from omniagent.api.db import DictConn, get_conn
 from omniagent.api.models import ToolboxCreate, ToolboxRecord
 
 router = APIRouter(prefix="/toolboxes", tags=["toolboxes"])
 
 
-async def _validate_tool_names(conn: psycopg.AsyncConnection, tool_names: list[str]) -> None:
+async def _validate_tool_names(conn: DictConn, tool_names: list[str]) -> None:
     if not tool_names:
         return
     rows = await conn.execute("SELECT name FROM tools WHERE name = ANY(%s)", (tool_names,))
@@ -36,7 +35,9 @@ async def create_toolbox(
             """,
             (body.name, body.version, body.tool_names, body.system_prompt),
         )
-        return ToolboxRecord.model_validate(dict(await rows.fetchone()))
+        row = await rows.fetchone()
+        assert row is not None
+        return ToolboxRecord.model_validate(row)
 
 
 @router.get("", response_model=list[ToolboxRecord])
