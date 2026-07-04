@@ -481,12 +481,9 @@ let allTools = [], allToolboxes = [], allAgents = [], allApiKeys = [], allSessio
 let currentNamespace = null;
 let currentTab = 'tools';
 
-const UI_API_KEY = document.querySelector('meta[name="omniagent-api-key"]')?.content || '';
-
+// Auth via session cookie — no API key in HTML source.
 function headers() {
-  const h = { 'Content-Type': 'application/json' };
-  if (UI_API_KEY) h['X-OmniAgent-Key'] = UI_API_KEY;
-  return h;
+  return { 'Content-Type': 'application/json' };
 }
 
 async function api(method, path, body) {
@@ -1473,7 +1470,7 @@ function renderSidebar(toolCalls) {
 
 function streamSession(sessionId) {
   if (chatSSE) chatSSE.close();
-  chatSSE = new EventSource('/sessions/' + sessionId + '/stream?key=' + encodeURIComponent(UI_API_KEY));
+  chatSSE = new EventSource('/sessions/' + sessionId + '/stream');
 
   const _patchSessionStatus = (id, status) => {
     const s = allSessions.find(s => s.id === id);

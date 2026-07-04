@@ -1048,8 +1048,9 @@ async def run_agent_job(session_id: str) -> None:
                     )
                     _safe_lf(generation.end, _warning="langfuse generation end failed")
                 if trace:
-                    _safe_lf(trace.update, output=result, _warning="langfuse trace end failed")
-                    _safe_lf(trace.end, _warning="langfuse trace end failed")
+                    # trace is start_as_current_observation — the context
+                    # manager's __exit__ calls end() automatically.  Only update.
+                    _safe_lf(trace.update, output=result, _warning="langfuse trace update failed")
                 if _langfuse:
                     _safe_lf(_langfuse.flush, _warning="langfuse flush failed")
 

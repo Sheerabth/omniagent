@@ -1,0 +1,22 @@
+# Test service — mock external API for manual testing.
+#   docker compose -f docker-compose.yml -f docker-compose.test.yml up -d
+#
+# Worker reaches it at http://test_service:8001 via the shared omniagent_net.
+# No host.docker.internal or iptables tricks needed.
+
+networks:
+  omniagent_net:
+
+services:
+  test_service:
+    container_name: omniagent-test
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    command: uv run uvicorn test_service:app --host 0.0.0.0 --port 8001
+    volumes:
+      - ./test_service.py:/app/test_service.py:ro
+    ports:
+      - "8001:8001"
+    networks:
+      - omniagent_net

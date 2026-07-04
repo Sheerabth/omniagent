@@ -43,10 +43,9 @@ async def _resolve_request(request: Request, api_key: str | None) -> list[str]:
 
     if validate_session(request):
         return ["admin"]
-    key = api_key or request.query_params.get("key")
-    if not key:
+    if not api_key:
         raise HTTPException(status_code=401, detail="X-OmniAgent-Key header missing")
-    return await _resolve_key(key)
+    return await _resolve_key(api_key)
 
 
 async def require_any(request: Request, api_key: str | None = Security(_header_scheme)) -> None:
