@@ -89,14 +89,16 @@ flowchart TD
 | **Worker** | Postgres (config), Procrastinate (jobs) | External APIs, Control Plane (internal API) |
 | **Postgres** | Control Plane (writes) | Control Plane (LISTEN/NOTIFY → SSE → UI) |
 
-**Hierarchy:** `Tool` (code or OpenAPI) → `Skill` (config) → `Agent` (config) → `Session` (runtime)
+**Hierarchy:** `Tool` (OpenAPI import) → `Toolbox` (config, group of tools) → `Agent` (config) → `Session` (runtime)
+**Observability:** JSON structured logs with trace-id correlation (`/metrics` exposes Prometheus counters + histograms).
+**SSE events:** `running`, `thinking`, `tool_call`, `tool_result`, `system_prompt`, `cancelling`, `cancelled`, `deferred`, `complete`, `error`.
 
 ---
 
 ## Prerequisites
 
-- Python 3.12+
-- PostgreSQL 14+
+- Python 3.14+
+- PostgreSQL 16+
 - [uv](https://docs.astral.sh/uv/)
 
 ---
@@ -133,9 +135,11 @@ cp .env.example .env
 | `OMNIAGENT_{HARNESS}_API_KEY` | — | LLM API key per harness, e.g. `OMNIAGENT_CLAUDE_API_KEY`, `OMNIAGENT_ANTIGRAVITY_API_KEY` |
 | `OMNIAGENT_CONTROL_PLANE` | — | URL the worker uses to reach the control plane (default: `http://localhost:8080`) |
 | `MAX_HISTORY_TURNS` | — | Conversation history limit (default: `50`) |
+| `OMNIAGENT_ENCRYPTION_KEY` | — | Fernet key for encrypting auth_context at rest. Generate: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
 | `TOOL_EXECUTION_TIMEOUT` | — | Default HTTP timeout in seconds for tool calls (default: `30`); overridden per-tool via the UI |
 | `MONTY_EXECUTION_TIMEOUT` | — | Timeout in seconds for Monty sandbox execution (default: `30`) |
 | `MONTY_EXECUTOR_WORKERS` | — | Thread pool size for Monty (default: `4`) |
+| `LOG_LEVEL` | — | Log level for structured JSON logs (default: `INFO`) |
 
 ### 4. Start the control plane
 
@@ -240,20 +244,19 @@ curl -X POST http://localhost:8080/sessions/$SESSION/run \
 
 ---
 
-## Configure skills and agents
+## Configure toolboxes and agents
 
 Via UI (`http://localhost:8080/`) or API:
 
 ```bash
-# Create a skill
-curl -X POST http://localhost:8080/skills \
+# Create a toolbox
+curl -X POST http://localhost:8080/toolboxes \
   -H "X-OmniAgent-Key: <key>" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "weather",
     "version": "v1",
     "tool_names": ["weather.get_weather", "weather.get_uv_index"],
-    "instructions": "Use these tools to answer weather-related questions.",
     "system_prompt": "You have access to weather tools."
   }'
 
@@ -265,7 +268,7 @@ curl -X POST http://localhost:8080/agents \
     "name": "weather-bot",
     "version": "v1",
     "harness": "claude",
-    "skill_refs": {"weather": "v1"},
+    "toolbox_refs": {"weather": "v1"},
     "system_prompt": "You are a helpful weather assistant."
   }'
 ```
@@ -295,7 +298,23 @@ curl -N http://localhost:8080/sessions/$SESSION/stream \
   -H "X-OmniAgent-Key: <key>"
 ```
 
-SSE event types: `thinking`, `tool_call`, `tool_result`, `system_prompt`, `error`, `complete`.
+SSE event types: `running`, `tool_call`, `tool_result`, `system_prompt`, `cancelling`, `cancelled`, `deferred`, `complete`, `error`.
+
+## Multi-message queueing & cancel
+
+Send messages while a turn is in flight — they're appended durably server-side and picked up when the current turn finishes. Cancel only stops the in-flight response (like "stop generating" in any chat UI); anything queued meanwhile continues normally.
+
+```bash
+# Send follow-up while turn is running (no 409)
+curl -X POST http://localhost:8080/sessions/$SESSION/run \
+  -H "X-OmniAgent-Key: <key>" \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "actually, also check the UV index"}'
+
+# Cancel the current turn only
+curl -X POST http://localhost:8080/sessions/$SESSION/cancel \
+  -H "X-OmniAgent-Key: <key>"
+```
 
 ---
 
