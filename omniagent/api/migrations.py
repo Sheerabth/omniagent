@@ -31,14 +31,12 @@ async def run_migrations(dsn: str) -> None:
             )
 
         # Custom migrations
-        await conn.execute(
-            """
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS schema_migrations (
                 filename TEXT PRIMARY KEY,
                 applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
-            """
-        )
+            """)
         rows = await conn.execute("SELECT filename FROM schema_migrations")
         applied = {r[0] for r in await rows.fetchall()}
 
