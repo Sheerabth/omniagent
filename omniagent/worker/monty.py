@@ -3,13 +3,12 @@
 import asyncio
 import concurrent.futures
 import json
-from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, Protocol
 
 import pydantic_monty as monty_lib
 
 from omniagent.config import settings
-from omniagent.worker.models import ToolSnapshot
+from omniagent.worker.models import MontyExecutor, ToolExecutor, ToolSnapshot
 
 _MONTY_WORKERS = settings.monty_executor_workers
 _MONTY_TIMEOUT = settings.monty_execution_timeout
@@ -25,8 +24,8 @@ def _get_monty_executor() -> concurrent.futures.ThreadPoolExecutor:
 
 def make_monty_tool(
     tool_snapshot: dict[str, ToolSnapshot],
-    tool_executor: Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]],
-) -> Callable[..., Awaitable[str]]:
+    tool_executor: ToolExecutor,
+) -> MontyExecutor:
     async def execute_python(code: str, observation: str) -> str:
         result = await run_monty_code(code, tool_snapshot, tool_executor)
         return json.dumps(result)
@@ -37,9 +36,9 @@ def make_monty_tool(
 async def run_monty_code(
     code: str,
     tool_snapshot: dict[str, ToolSnapshot],
-    tool_executor: Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]],
+    tool_executor: ToolExecutor,
 ) -> Any:
-    external_fns: dict[str, Callable] = {}
+    external_fns: dict[str, SyncTool] = {}
     for tool_name in tool_snapshot:
         safe_name = tool_name.replace(".", "__").replace("-", "_")
         external_fns[safe_name] = _make_sync_tool(tool_name, tool_executor)
@@ -61,10 +60,14 @@ async def run_monty_code(
     return result
 
 
+class SyncTool(Protocol):
+    def __call__(self, **kwargs: Any) -> Any: ...
+
+
 def _make_sync_tool(
     tool_name: str,
-    tool_executor: Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]],
-) -> Callable[..., Any]:
+    tool_executor: ToolExecutor,
+) -> SyncTool:
     def sync_tool(**kwargs: Any) -> Any:
         return asyncio.run(tool_executor(tool_name, kwargs))
 

@@ -2,7 +2,6 @@
 
 import json
 import logging
-from collections.abc import Awaitable, Callable
 from typing import Any
 
 from claude_agent_sdk import query
@@ -23,7 +22,7 @@ from omniagent.worker.harness.base import (
     HarnessAdapter,
     make_monty_executor,
 )
-from omniagent.worker.models import BaseEvent, ThinkingEvent, ToolSnapshot
+from omniagent.worker.models import EventEmitter, ThinkingEvent, ToolExecutor, ToolSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -37,8 +36,8 @@ class ClaudeAdapter(HarnessAdapter):
         self,
         system_prompt: str,
         history: list[MessageRecord],
-        tool_executor: Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]],
-        emit_event: Callable[[BaseEvent], Awaitable[None]],
+        tool_executor: ToolExecutor,
+        emit_event: EventEmitter,
         use_monty: bool,
         tool_snapshot: dict[str, ToolSnapshot],
         model: str = "",
@@ -76,8 +75,8 @@ class ClaudeAdapter(HarnessAdapter):
 
 def _build_mcp_server(
     tool_snapshot: dict[str, ToolSnapshot],
-    tool_executor: Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]],
-    emit_event: Callable[[BaseEvent], Awaitable[None]],
+    tool_executor: ToolExecutor,
+    emit_event: EventEmitter,
     use_monty: bool,
 ) -> Server:
     server = Server("omniagent-tools")

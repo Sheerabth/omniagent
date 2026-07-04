@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Protocol
 
 from pydantic import BaseModel
 
@@ -73,3 +73,18 @@ class ThinkingEvent(BaseEvent):
 class ErrorEvent(BaseEvent):
     type: str = "error"
     reason: str
+
+
+# ── Behavioural Protocols ─────────────────────────────────────────────────
+
+
+class ToolExecutor(Protocol):
+    async def __call__(self, tool_name: str, input_data: dict[str, Any]) -> dict[str, Any]: ...
+
+
+class EventEmitter(Protocol):
+    async def __call__(self, event: BaseEvent) -> None: ...
+
+
+class MontyExecutor(Protocol):
+    async def __call__(self, code: str, observation: str) -> str: ...

@@ -1,12 +1,15 @@
 """Procrastinate setup for control plane (monitor-only — no job execution)."""
 
 import logging
-from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, Protocol
 
 logger = logging.getLogger(__name__)
 
-SessionFailCallback = Callable[[str], Awaitable[None]]
+
+class SessionFailCallback(Protocol):
+    async def __call__(self, session_id: str) -> None: ...
+
+
 _session_fail_callback: SessionFailCallback | None = None
 
 

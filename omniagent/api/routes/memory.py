@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends
 
 from omniagent.api.auth import require_scope
 from omniagent.api.db import get_conn
+from omniagent.api.models import MemorySetRequest
 
 router = APIRouter(prefix="/memory", tags=["memory"])
 
@@ -19,14 +20,14 @@ async def get_agent_memory(agent_name: str, _=Depends(require_scope("agents:read
 
 @router.put("/{agent_name}/{key}", status_code=204)
 async def set_agent_memory(
-    agent_name: str, key: str, body: dict, _=Depends(require_scope("agents:write"))
+    agent_name: str, key: str, body: MemorySetRequest, _=Depends(require_scope("agents:write"))
 ) -> None:
     async with get_conn() as conn:
         await conn.execute(
             """INSERT INTO agent_memory (agent_name, key, value, updated_at)
                VALUES (%s, %s, %s::jsonb, NOW())
                ON CONFLICT (agent_name, key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()""",
-            (agent_name, key, json.dumps(body.get("value"))),
+            (agent_name, key, json.dumps(body.value)),
         )
 
 

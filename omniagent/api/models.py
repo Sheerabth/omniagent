@@ -207,6 +207,13 @@ class SessionEventRequest(BaseModel):
     skill_name: str | None = None
 
 
+# ── Memory ──────────────────────────────────────────────────────────────────
+
+
+class MemorySetRequest(BaseModel):
+    value: Any
+
+
 # ── Schedules ──────────────────────────────────────────────────────────────
 
 

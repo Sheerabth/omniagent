@@ -3,8 +3,7 @@
 import inspect
 import json
 import logging
-from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, Protocol
 
 from google.antigravity import Agent
 
@@ -19,11 +18,23 @@ except ImportError as exc:
 
 from omniagent.api.models import MessageRecord
 from omniagent.worker.harness.base import HarnessAdapter, make_monty_executor
-from omniagent.worker.models import BaseEvent, ThinkingEvent, ToolSnapshot
+from omniagent.worker.models import (
+    EventEmitter,
+    MontyExecutor,
+    ThinkingEvent,
+    ToolExecutor,
+    ToolSnapshot,
+)
 
 logger = logging.getLogger(__name__)
 
 _TYPE_MAP = {"string": str, "integer": int, "number": float, "boolean": bool}
+
+
+class AntigravityTool(Protocol):
+    """Dynamically-signed tool callable registered with google-antigravity."""
+
+    async def __call__(self, **kwargs: Any) -> str: ...
 
 
 class AntigravityAdapter(HarnessAdapter):
@@ -35,8 +46,8 @@ class AntigravityAdapter(HarnessAdapter):
         self,
         system_prompt: str,
         history: list[MessageRecord],
-        tool_executor: Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]],
-        emit_event: Callable[[BaseEvent], Awaitable[None]],
+        tool_executor: ToolExecutor,
+        emit_event: EventEmitter,
         use_monty: bool,
         tool_snapshot: dict[str, ToolSnapshot],
         model: str = "",
@@ -73,9 +84,9 @@ class AntigravityAdapter(HarnessAdapter):
     def _build_tool_callables(
         self,
         tool_snapshot: dict[str, ToolSnapshot],
-        tool_executor: Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]],
-        emit_event: Callable[[BaseEvent], Awaitable[None]],
-    ) -> list[Callable[..., Any]]:
+        tool_executor: ToolExecutor,
+        emit_event: EventEmitter,
+    ) -> list[AntigravityTool]:
         return [
             _make_tool_fn(name, schema, tool_executor) for name, schema in tool_snapshot.items()
         ]
@@ -83,17 +94,17 @@ class AntigravityAdapter(HarnessAdapter):
     def _build_monty_tool(
         self,
         tool_snapshot: dict[str, ToolSnapshot],
-        tool_executor: Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]],
-        emit_event: Callable[[BaseEvent], Awaitable[None]],
-    ) -> Callable[..., Awaitable[str]]:
+        tool_executor: ToolExecutor,
+        emit_event: EventEmitter,
+    ) -> MontyExecutor:
         return make_monty_executor(tool_snapshot, tool_executor, emit_event)
 
 
 def _make_tool_fn(
     tool_name: str,
     schema: ToolSnapshot,
-    tool_executor: Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]],
-) -> Callable[..., Any]:
+    tool_executor: ToolExecutor,
+) -> AntigravityTool:
     props = schema.input_schema.get("properties", {})
     param_names = [k for k in props if k != "observation"]
 

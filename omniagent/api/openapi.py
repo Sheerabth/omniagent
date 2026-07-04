@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
 from typing import Any
 
+from pydantic import BaseModel
 
-@dataclass
-class ParsedTool:
+
+class ParsedTool(BaseModel):
     name: str
     description: str
     input_schema: dict[str, Any]
@@ -16,7 +16,7 @@ class ParsedTool:
     openapi_method: str
     openapi_path: str
     openapi_base_url: str
-    openapi_security: dict | None = field(default=None)
+    openapi_security: dict | None = None
 
 
 def _resolve_refs(obj: Any, components: dict, _seen: frozenset = frozenset()) -> Any:

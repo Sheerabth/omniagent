@@ -1042,8 +1042,9 @@ async def _handle_defer(
 
     await _emit_event(session_id, BaseEvent(type="deferred"))
 
-    scheduled_at = defer.scheduled_at()
-    await run_agent_job.configure(queue="default", schedule_at=scheduled_at).defer_async(
+    scheduled_at_iso = defer.scheduled_at()
+    scheduled_at_dt = datetime.fromisoformat(scheduled_at_iso)
+    await run_agent_job.configure(queue="default", schedule_at=scheduled_at_dt).defer_async(
         session_id=session_id,
     )
-    logger.info("session %s deferred until %s", session_id, scheduled_at.isoformat())
+    logger.info("session %s deferred until %s", session_id, scheduled_at_iso)

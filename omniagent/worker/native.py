@@ -7,21 +7,18 @@ executor, so no openapi_* fields are needed.
 
 from __future__ import annotations
 
-import dataclasses
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+
+from pydantic import BaseModel
 
 
-@dataclasses.dataclass
-class DeferInfo:
+class DeferInfo(BaseModel):
     delay_seconds: int = 0
     resume_at: datetime | None = None  # if set, takes precedence over delay_seconds
 
-    def scheduled_at(self) -> datetime:
-        if self.resume_at:
-            return self.resume_at
-        from datetime import timedelta
-
-        return datetime.now(UTC) + timedelta(seconds=self.delay_seconds)
+    def scheduled_at(self) -> str:
+        ts = self.resume_at or (datetime.now(UTC) + timedelta(seconds=self.delay_seconds))
+        return ts.isoformat()
 
 
 # Descriptions injected into system prompt and tool listings

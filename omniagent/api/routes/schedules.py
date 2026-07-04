@@ -12,7 +12,7 @@ from omniagent.api.models import ScheduleCreate, ScheduleRecord, ScheduleUpdate
 router = APIRouter(prefix="/schedules", tags=["schedules"])
 
 
-def _next_run_at(cron_expr: str):
+def _next_run_at(cron_expr: str) -> str | None:
     """Compute next cron fire time using croniter (transitive dep via procrastinate)."""
     try:
         from datetime import UTC, datetime
@@ -20,7 +20,7 @@ def _next_run_at(cron_expr: str):
         from croniter import croniter
 
         c = croniter(cron_expr)
-        return datetime.fromtimestamp(c.get_next(float), tz=UTC)
+        return datetime.fromtimestamp(c.get_next(float), tz=UTC).isoformat()
     except Exception:
         return None
 

@@ -1,9 +1,14 @@
 from abc import ABC, abstractmethod
-from collections.abc import Awaitable, Callable
-from typing import Any
 
 from omniagent.api.models import MessageRecord
-from omniagent.worker.models import BaseEvent, ToolCallEvent, ToolResultEvent, ToolSnapshot
+from omniagent.worker.models import (
+    EventEmitter,
+    MontyExecutor,
+    ToolCallEvent,
+    ToolExecutor,
+    ToolResultEvent,
+    ToolSnapshot,
+)
 
 EXECUTE_PYTHON_DESCRIPTION = (
     "Execute Python code in a sandboxed environment. "
@@ -15,9 +20,9 @@ EXECUTE_PYTHON_DESCRIPTION = (
 
 def make_monty_executor(
     tool_snapshot: dict[str, ToolSnapshot],
-    tool_executor: Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]],
-    emit_event: Callable[[BaseEvent], Awaitable[None]],
-) -> Callable[..., Awaitable[str]]:
+    tool_executor: ToolExecutor,
+    emit_event: EventEmitter,
+) -> MontyExecutor:
     """Shared execute_python factory — emits tool_call/tool_result and runs monty."""
     from omniagent.worker.monty import make_monty_tool
 
@@ -61,8 +66,8 @@ class HarnessAdapter(ABC):
         self,
         system_prompt: str,
         history: list[MessageRecord],
-        tool_executor: Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]],
-        emit_event: Callable[[BaseEvent], Awaitable[None]],
+        tool_executor: ToolExecutor,
+        emit_event: EventEmitter,
         use_monty: bool,
         tool_snapshot: dict[str, ToolSnapshot],
         model: str = "",
