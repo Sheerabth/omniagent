@@ -17,6 +17,7 @@ from procrastinate import PsycopgConnector
 
 from omniagent.api.crypto import decrypt_auth_context
 from omniagent.api.models import MessageRecord, ToolCallEntry
+from omniagent.logging_config import trace_id_var
 from omniagent.worker.models import (
     BaseEvent,
     ErrorEvent,
@@ -32,6 +33,8 @@ from omniagent.worker.native import NATIVE_TOOL_DESCRIPTIONS, NATIVE_TOOL_SCHEMA
 logger = logging.getLogger(__name__)
 
 _DEFAULT_TOOL_TIMEOUT = int(os.environ.get("TOOL_EXECUTION_TIMEOUT", "30"))
+_MAX_HISTORY_TURNS = int(os.environ.get("MAX_HISTORY_TURNS", "50"))
+_CANCEL_MARKER = "[CANCELLED: previous response was stopped by the user before completing]"
 
 app = procrastinate.App(connector=PsycopgConnector(conninfo=os.environ.get("DATABASE_URL", "")))
 
@@ -366,26 +369,75 @@ async def _emit_event(session_id: str, event: BaseEvent) -> None:
         logger.warning("emit_event failed: %s", exc)
 
 
-async def _complete_session(session_id: str, result: str) -> None:
+async def _complete_session(session_id: str, result: str, prior_count: int) -> None:
+    """Append the assistant reply and decide whether to go idle or chain another turn.
+
+    `prior_count` is the message count this turn started with. If the array
+    has grown beyond that (via /run appending while this turn was in flight),
+    there's unanswered input queued — go back to 'pending' and schedule an
+    immediate follow-up turn instead of 'idle', so nothing sent while busy
+    gets silently dropped. `status` is job-owned end to end: only this
+    function (or _handle_defer) ever writes it, always a confirmed fact, so
+    a fresh SSE listener can always trust it immediately, cancelled included.
+
+    If cancellation was requested while this turn was in flight, this turn's
+    own answer is stale and gets discarded — that only stops THIS turn, same
+    as "stop generating" in a chat UI. Anything queued in the meantime still
+    gets picked up by an immediate follow-up turn, exactly like the non
+    cancelled catch-up path below.
+    """
     from omniagent.api.db import get_conn
 
     ch = _CH(session_id)
+    has_queued_input = False
     async with get_conn() as conn:
-        rows = await conn.execute("SELECT messages FROM sessions WHERE id=%s", (session_id,))
+        rows = await conn.execute(
+            "SELECT messages, cancel_requested FROM sessions WHERE id=%s FOR UPDATE", (session_id,)
+        )
         sess = await rows.fetchone()
-        messages = (sess["messages"] or []) if sess else []
-        messages.append(
-            MessageRecord(
-                role="assistant",
-                content=result,
-                timestamp=datetime.now(UTC).isoformat(),
+        if not sess:
+            return
+        messages = sess["messages"] or []
+        has_queued_input = len(messages) > prior_count
+
+        if sess["cancel_requested"]:
+            logger.info("session %s cancel requested, discarding this turn's result", session_id)
+            marker = MessageRecord(
+                role="user", content=_CANCEL_MARKER, timestamp=datetime.now(UTC).isoformat()
             ).model_dump()
-        )
-        await conn.execute(
-            "UPDATE sessions SET status='idle', messages=%s, updated_at=NOW() WHERE id=%s",
-            (json.dumps(messages), session_id),
-        )
-        await conn.execute("SELECT pg_notify(%s, %s)", (ch, "complete"))
+            messages = messages[:prior_count] + [marker] + messages[prior_count:]
+            next_status = "pending" if has_queued_input else "cancelled"
+            await conn.execute(
+                "UPDATE sessions SET status=%s, messages=%s, cancel_requested=false, updated_at=NOW() WHERE id=%s",
+                (next_status, json.dumps(messages), session_id),
+            )
+            # Always 'cancelled' here — the first turn is stopped, full stop.
+            # If there's queued input, the follow-up turn's own lifecycle
+            # (run_agent_job → 'running', then 'complete') handles the rest.
+            # This gives the client a clean gap between "stopping" (first
+            # message done) and "stop" (second message starting), so the user
+            # can stop the second message independently.
+            await conn.execute("SELECT pg_notify(%s, %s)", (ch, "cancelled"))
+        else:
+            messages.append(
+                MessageRecord(
+                    role="assistant",
+                    content=result,
+                    timestamp=datetime.now(UTC).isoformat(),
+                ).model_dump()
+            )
+            if len(messages) > _MAX_HISTORY_TURNS * 2:
+                messages = messages[-(_MAX_HISTORY_TURNS * 2) :]
+            next_status = "pending" if has_queued_input else "idle"
+            await conn.execute(
+                "UPDATE sessions SET status=%s, messages=%s, updated_at=NOW() WHERE id=%s",
+                (next_status, json.dumps(messages), session_id),
+            )
+            await conn.execute("SELECT pg_notify(%s, %s)", (ch, "complete"))
+
+    if has_queued_input:
+        await run_agent_job.configure(queue="default").defer_async(session_id=session_id)
+        logger.info("session %s has queued input, scheduling follow-up turn", session_id)
 
 
 def _safe_tool_name(name: str) -> str:
@@ -472,6 +524,8 @@ def _make_native_tool_snapshot(name: str) -> ToolSnapshot:
 
 @app.task(name="run_agent_job", queue="default")
 async def run_agent_job(session_id: str) -> None:
+    trace_id_var.set(session_id)
+    job_start = time.monotonic()
     from omniagent.api.db import get_conn
 
     async with get_conn() as conn:
@@ -486,13 +540,11 @@ async def run_agent_job(session_id: str) -> None:
             return
         history = [MessageRecord.model_validate(m) for m in (row["messages"] or [])]
         if row["status"] in ("pending", "deferred"):
-            was_deferred = row["status"] == "deferred"
             await conn.execute(
                 "UPDATE sessions SET status='running', updated_at=NOW() WHERE id=%s",
                 (session_id,),
             )
-            if was_deferred:
-                await _emit_event(session_id, BaseEvent(type="running"))
+            await _emit_event(session_id, BaseEvent(type="running"))
 
     config = await _fetch_session_config(session_id)
     harness = config.harness
@@ -842,11 +894,25 @@ async def run_agent_job(session_id: str) -> None:
 
         if defer := _defer_state.get("info"):
             await _handle_defer(session_id, result, history, defer)
+            outcome = "deferred"
         else:
-            await _complete_session(session_id, result)
+            await _complete_session(session_id, result, len(history))
+            outcome = "completed"
+        logger.info(
+            "run_agent_job finished",
+            extra={
+                "session_id": session_id,
+                "outcome": outcome,
+                "duration_ms": round((time.monotonic() - job_start) * 1000),
+            },
+        )
 
     except Exception as exc:
-        logger.exception("run_agent_job failed for session %s", session_id)
+        logger.exception(
+            "run_agent_job failed for session %s",
+            session_id,
+            extra={"duration_ms": round((time.monotonic() - job_start) * 1000)},
+        )
         await emit(ErrorEvent(reason=str(exc)))
         raise
 
@@ -857,24 +923,73 @@ async def _handle_defer(
     history: list[MessageRecord],
     defer: DeferInfo,
 ) -> None:
+    """Persist the deferred turn's outcome and re-arm the session for wake-up.
+
+    Re-fetches messages fresh (under FOR UPDATE) instead of overwriting from
+    the stale `history` snapshot — anything appended via /run while this turn
+    was in flight must survive, not get silently erased by this write.
+
+    If cancellation was requested mid-turn, its decision to defer is
+    discarded — same as _complete_session, cancel only stops this turn, not
+    the conversation. Any messages queued in the meantime get an immediate
+    follow-up turn instead of waiting for the (now-discarded) defer's
+    wake-up time.
+    """
     from omniagent.api.db import get_conn
 
     now = datetime.now(UTC).isoformat()
-    new_history = list(history)
-    new_history.append(MessageRecord(role="assistant", content=result, timestamp=now))
-    new_history.append(
-        MessageRecord(
-            role="user", content="[RESUME: Turn resumed. Continue your task.]", timestamp=now
-        )
-    )
-
-    serialized = json.dumps([m.model_dump() for m in new_history])
+    prior_count = len(history)
+    cancelled = False
+    cancelled_with_queued_input = False
 
     async with get_conn() as conn:
-        await conn.execute(
-            "UPDATE sessions SET status='deferred', messages=%s, deferred_payload=%s, updated_at=NOW() WHERE id=%s",
-            (serialized, "{}", session_id),
+        rows = await conn.execute(
+            "SELECT messages, cancel_requested FROM sessions WHERE id=%s FOR UPDATE", (session_id,)
         )
+        sess = await rows.fetchone()
+        if not sess:
+            return
+        current_messages = sess["messages"] or []
+        queued = current_messages[prior_count:]
+        cancelled = sess["cancel_requested"]
+
+        if cancelled:
+            logger.info("session %s cancel requested, discarding defer", session_id)
+            cancelled_with_queued_input = bool(queued)
+            marker = MessageRecord(role="user", content=_CANCEL_MARKER, timestamp=now).model_dump()
+            messages_with_marker = current_messages[:prior_count] + [marker] + queued
+            next_status = "pending" if cancelled_with_queued_input else "cancelled"
+            await conn.execute(
+                "UPDATE sessions SET status=%s, messages=%s, cancel_requested=false, updated_at=NOW() WHERE id=%s",
+                (next_status, json.dumps(messages_with_marker), session_id),
+            )
+        else:
+            new_messages = current_messages[:prior_count]
+            new_messages.append(
+                MessageRecord(role="assistant", content=result, timestamp=now).model_dump()
+            )
+            new_messages.extend(queued)
+            new_messages.append(
+                MessageRecord(
+                    role="user",
+                    content="[RESUME: Turn resumed. Continue your task.]",
+                    timestamp=now,
+                ).model_dump()
+            )
+            await conn.execute(
+                "UPDATE sessions SET status='deferred', messages=%s, deferred_payload=%s, updated_at=NOW() WHERE id=%s",
+                (json.dumps(new_messages), "{}", session_id),
+            )
+
+    if cancelled:
+        ch = _CH(session_id)
+        async with get_conn() as conn:
+            # Same as _complete_session — always 'cancelled'. If there's
+            # queued input the follow-up's own lifecycle fires 'running'.
+            await conn.execute("SELECT pg_notify(%s, %s)", (ch, "cancelled"))
+        if cancelled_with_queued_input:
+            await run_agent_job.configure(queue="default").defer_async(session_id=session_id)
+        return
 
     await _emit_event(session_id, BaseEvent(type="deferred"))
 

@@ -28,7 +28,8 @@ dependencies = [
     "httpx",
     # sse
     "sse-starlette",
-    # pub/sub
+    # metrics
+    "prometheus-client",
 ]
 
 [project.optional-dependencies]

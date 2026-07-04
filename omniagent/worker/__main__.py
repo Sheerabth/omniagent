@@ -5,7 +5,9 @@ import logging
 import os
 import sys
 
-logging.basicConfig(level=logging.INFO)
+from omniagent.logging_config import configure_logging
+
+configure_logging()
 logger = logging.getLogger(__name__)
 
 

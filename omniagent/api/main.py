@@ -2,13 +2,16 @@
 
 import logging
 import os
+import time
+import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from omniagent.api import db, queue
+from omniagent.api.metrics import REQUEST_COUNT, REQUEST_LATENCY, render_metrics
 from omniagent.api.routes import (
     agents,
     auth,
@@ -22,8 +25,9 @@ from omniagent.api.routes import (
     toolboxes,
     tools,
 )
+from omniagent.logging_config import configure_logging, trace_id_var
 
-logging.basicConfig(level=logging.INFO)
+configure_logging()
 logger = logging.getLogger(__name__)
 
 _UI_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "ui")
@@ -71,6 +75,7 @@ async def _reconcile_stuck_sessions() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    from omniagent.api import sse_hub
     from omniagent.api.migrations import run_migrations
     from omniagent.worker.job import app as proc_app
 
@@ -79,14 +84,43 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await db.init_pool()
     await _reconcile_stuck_sessions()
     queue.set_session_fail_callback(_mark_session_failed)
+    await sse_hub.start()
 
     async with proc_app.open_async():
         yield
 
+    await sse_hub.stop()
     await db.close_pool()
 
 
 app = FastAPI(title="OmniAgent Control Plane", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def trace_and_metrics(request: Request, call_next):
+    trace_id = request.headers.get("X-Trace-Id", str(uuid.uuid4()))
+    token = trace_id_var.set(trace_id)
+    start = time.monotonic()
+    try:
+        response = await call_next(request)
+        status = str(response.status_code)
+    except Exception:
+        status = "500"
+        raise
+    finally:
+        route = request.scope.get("route")
+        path = route.path if route else request.url.path
+        REQUEST_LATENCY.labels(request.method, path).observe(time.monotonic() - start)
+        REQUEST_COUNT.labels(request.method, path, status).inc()
+        trace_id_var.reset(token)
+    response.headers["X-Trace-Id"] = trace_id
+    return response
+
+
+@app.get("/metrics", include_in_schema=False)
+async def metrics() -> Response:
+    body, content_type = render_metrics()
+    return Response(body, media_type=content_type)
 
 
 @app.get("/health", include_in_schema=False)

@@ -1,5 +1,4 @@
 import json
-import os
 import uuid
 from datetime import UTC, datetime
 
@@ -18,8 +17,6 @@ from omniagent.api.models import (
 )
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
-
-MAX_HISTORY_TURNS = int(os.environ.get("MAX_HISTORY_TURNS", "50"))
 
 
 @router.post("", response_model=SessionRecord, status_code=201)
@@ -59,44 +56,46 @@ async def create_session(
 async def run_session(
     session_id: uuid.UUID, body: RunRequest, _=Depends(require_scope("sessions:write"))
 ) -> JSONResponse:
+    """Append a user message and, if idle, kick off a turn.
+
+    Safe to call while a turn is already in flight — the message is appended
+    durably and picked up by the worker's catch-up check when the current
+    turn completes, instead of being rejected. See job.py:_complete_session.
+    """
+    new_message = MessageRecord(
+        role="user",
+        content=body.prompt,
+        timestamp=datetime.now(UTC).isoformat(),
+    ).model_dump()
+
     async with get_conn() as conn:
-        rows = await conn.execute("SELECT * FROM sessions WHERE id = %s", (session_id,))
+        # Row lock so a concurrent /run can't race the busy-check below.
+        rows = await conn.execute(
+            "SELECT status FROM sessions WHERE id = %s FOR UPDATE", (session_id,)
+        )
         session = await rows.fetchone()
         if not session:
             raise HTTPException(404)
 
-        messages = session["messages"] or []
-        messages.append(
-            MessageRecord(
-                role="user",
-                content=body.prompt,
-                timestamp=datetime.now(UTC).isoformat(),
-            ).model_dump()
-        )
-        if len(messages) > MAX_HISTORY_TURNS * 2:
-            messages = messages[-(MAX_HISTORY_TURNS * 2) :]
-
-        # Atomically claim the session — only if not already running.
-        # Removes TOCTOU race between status check and defer_async.
-        rows = await conn.execute(
+        was_idle = session["status"] in ("idle", "failed", "cancelled")
+        new_status = "pending" if was_idle else session["status"]
+        await conn.execute(
             """
             UPDATE sessions
-            SET status = 'pending', messages = %s, updated_at = NOW()
-            WHERE id = %s AND status IN ('idle', 'failed', 'cancelled')
-            RETURNING id
+            SET messages = messages || %s::jsonb, status = %s, updated_at = NOW()
+            WHERE id = %s
             """,
-            (json.dumps(messages), session_id),
-        )
-        if not await rows.fetchone():
-            raise HTTPException(409, detail="Session is busy")
-
-        from omniagent.worker.job import run_agent_job
-
-        await run_agent_job.configure(queue="default").defer_async(
-            session_id=str(session_id),
+            (json.dumps([new_message]), new_status, session_id),
         )
 
-    return JSONResponse({"session_id": str(session_id)}, status_code=202)
+        if was_idle:
+            from omniagent.worker.job import run_agent_job
+
+            await run_agent_job.configure(queue="default").defer_async(
+                session_id=str(session_id),
+            )
+
+    return JSONResponse({"session_id": str(session_id), "queued": not was_idle}, status_code=202)
 
 
 @router.post("/{session_id}/resume", status_code=202)
@@ -150,13 +149,21 @@ async def list_sessions(_=Depends(require_scope("sessions:read"))) -> list[Sessi
 
 @router.post("/{session_id}/cancel", status_code=204)
 async def cancel_session(session_id: uuid.UUID, _=Depends(require_scope("sessions:write"))) -> None:
+    """Request cancellation — does not set status directly.
+
+    status is job-owned (the worker is the only writer, always a confirmed
+    fact about its own lifecycle). This just raises a flag the in-flight turn
+    checks when it finishes; the worker decides the real outcome (cancelled,
+    or straight into a follow-up turn if more was queued meanwhile) and
+    writes status itself. See job.py:_complete_session / _handle_defer.
+    """
     ch = "session_" + str(session_id).replace("-", "_")
     async with get_conn() as conn:
         await conn.execute(
-            "UPDATE sessions SET status='cancelled', updated_at=NOW() WHERE id=%s AND status IN ('running','pending','deferred')",
+            "UPDATE sessions SET cancel_requested=true, updated_at=NOW() WHERE id=%s AND status IN ('running','pending','deferred')",
             (session_id,),
         )
-        await conn.execute("SELECT pg_notify(%s, %s)", (ch, "cancelled"))
+        await conn.execute("SELECT pg_notify(%s, %s)", (ch, "cancelling"))
 
 
 @router.delete("/{session_id}", status_code=204)
