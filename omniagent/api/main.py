@@ -77,9 +77,10 @@ async def _reconcile_stuck_sessions() -> None:
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     from omniagent.api import sse_hub
     from omniagent.api.migrations import run_migrations
+    from omniagent.config import settings
     from omniagent.worker.job import app as proc_app
 
-    dsn = os.environ.get("DATABASE_URL", "")
+    dsn = settings.database_url
     await run_migrations(dsn)
     await db.init_pool()
     await _reconcile_stuck_sessions()
@@ -164,8 +165,9 @@ async def login_page(request: Request) -> HTMLResponse:
 @app.get("/", include_in_schema=False)
 async def ui(request: Request) -> HTMLResponse:
     from omniagent.api.routes.auth import validate_session
+    from omniagent.config import settings
 
-    if not os.environ.get("UI_PASSWORD"):
+    if not settings.ui_password:
         return HTMLResponse(
             "<h2>UI_PASSWORD is not set. Set it in your environment to enable the UI.</h2>",
             status_code=503,

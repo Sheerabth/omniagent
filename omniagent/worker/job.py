@@ -13,16 +13,19 @@ from urllib.parse import quote
 
 import httpx
 import procrastinate
+from langfuse import Langfuse
 from procrastinate import PsycopgConnector
 
 from omniagent.api.crypto import decrypt_auth_context
 from omniagent.api.models import MessageRecord, ToolCallEntry
+from omniagent.config import settings
 from omniagent.logging_config import trace_id_var
 from omniagent.worker.models import (
     BaseEvent,
     ErrorEvent,
     SessionConfig,
     SystemPromptEvent,
+    ThinkingEvent,
     ToolboxSnapshot,
     ToolCallEvent,
     ToolResultEvent,
@@ -32,10 +35,14 @@ from omniagent.worker.native import NATIVE_TOOL_DESCRIPTIONS, NATIVE_TOOL_SCHEMA
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_TOOL_TIMEOUT = int(os.environ.get("TOOL_EXECUTION_TIMEOUT", "30"))
+# ponytail: no-op if LANGFUSE_SECRET_KEY not set — no config change needed
+# for deployments that don't run langfuse.
+_langfuse = Langfuse() if settings.langfuse_secret_key else None
+
+_DEFAULT_TOOL_TIMEOUT = settings.tool_execution_timeout
 _CANCEL_MARKER = "[CANCELLED: previous response was stopped by the user before completing]"
 
-app = procrastinate.App(connector=PsycopgConnector(conninfo=os.environ.get("DATABASE_URL", "")))
+app = procrastinate.App(connector=PsycopgConnector(conninfo=settings.database_url))
 
 _http_client: httpx.AsyncClient | None = None
 _http_client_loop: asyncio.AbstractEventLoop | None = None
@@ -555,7 +562,21 @@ async def run_agent_job(session_id: str) -> None:
     # Shared defer state — set by native.defer_turn / native.defer_turn_until inside tool_exec
     _defer_state: dict[str, DeferInfo] = {}
 
-    async def tool_exec(tool_name: str, input_data: dict[str, Any]) -> dict[str, Any]:
+    # Langfuse trace — wraps the entire turn with nested generations and spans.
+    last_user = history[-1].content if history and history[-1].role == "user" else None
+    trace = (
+        _langfuse.trace(
+            name=config.agent_name,
+            session_id=session_id,
+            user_id=config.agent_name,
+            metadata={"harness": harness, "model": model, "monty": use_monty},
+            input=last_user,
+        )
+        if _langfuse
+        else None
+    )
+
+    async def _do_tool_exec(tool_name: str, input_data: dict[str, Any]) -> dict[str, Any]:
         # Native tools are handled here, not by the HTTP executor
         if tool_name in (
             "native.memory_get",
@@ -859,7 +880,16 @@ async def run_agent_job(session_id: str) -> None:
         )
         return output
 
+    async def tool_exec(tool_name: str, input_data: dict[str, Any]) -> dict[str, Any]:
+        _lf_span = trace.span(name=tool_name, input=input_data) if trace else None
+        result = await _do_tool_exec(tool_name, input_data)
+        if _lf_span:
+            _lf_span.update(output=result).end()
+        return result
+
     async def emit(event: BaseEvent) -> None:
+        if trace and isinstance(event, ThinkingEvent):
+            trace.span(name="thinking", input=event.content[:200] if event.content else None).end()
         await _emit_event(session_id, event)
 
     await emit(SystemPromptEvent(content=system_prompt, input=history))
@@ -876,6 +906,15 @@ async def run_agent_job(session_id: str) -> None:
         else:
             raise ValueError(f"Unknown harness: {harness!r}")
 
+        generation = (
+            trace.generation(
+                name=f"{harness}/{model}",
+                model=model,
+                input=last_user,
+            )
+            if trace
+            else None
+        )
         result = await adapter.run(
             system_prompt=system_prompt,
             history=history,
@@ -885,6 +924,10 @@ async def run_agent_job(session_id: str) -> None:
             tool_snapshot=tool_snapshot,
             model=model,
         )
+        if generation:
+            generation.end(output=result)
+        if trace:
+            trace.update(output=result)
 
         if defer := _defer_state.get("info"):
             await _handle_defer(session_id, result, history, defer)

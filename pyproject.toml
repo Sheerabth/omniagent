@@ -30,6 +30,8 @@ dependencies = [
     "sse-starlette",
     # metrics
     "prometheus-client",
+    # tracing
+    "langfuse",
 ]
 
 [project.optional-dependencies]

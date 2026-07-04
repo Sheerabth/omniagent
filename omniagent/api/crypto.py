@@ -8,14 +8,15 @@ If key is unset: encrypt() returns JSON string (plaintext), decrypt() parses JSO
 
 import json
 import logging
-import os
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
 
 def _fernet():
-    key = os.environ.get("OMNIAGENT_ENCRYPTION_KEY", "").strip()
+    from omniagent.config import settings
+
+    key = settings.omniagent_encryption_key.strip()
     if not key:
         return None
     from cryptography.fernet import Fernet

@@ -7,7 +7,6 @@ whole story across both processes.
 
 import json
 import logging
-import os
 from contextvars import ContextVar
 
 trace_id_var: ContextVar[str | None] = ContextVar("trace_id", default=None)
@@ -36,7 +35,9 @@ class JsonFormatter(logging.Formatter):
 
 
 def configure_logging() -> None:
-    level = os.environ.get("LOG_LEVEL", "INFO").upper()
+    from omniagent.config import settings
+
+    level = settings.log_level.upper()
     handler = logging.StreamHandler()
     handler.setFormatter(JsonFormatter())
     root = logging.getLogger()

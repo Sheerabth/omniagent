@@ -19,7 +19,6 @@ before resuming.
 import asyncio
 import contextlib
 import logging
-import os
 
 import psycopg
 
@@ -62,7 +61,9 @@ async def _supervisor() -> None:
     one-connection-per-stream design, so losing it needs to self-heal.
     """
     global _conn
-    dsn = os.environ.get("DATABASE_URL", "")
+    from omniagent.config import settings
+
+    dsn = settings.database_url
     backoff = 1
     while not _stopped:
         try:

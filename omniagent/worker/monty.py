@@ -3,16 +3,16 @@
 import asyncio
 import concurrent.futures
 import json
-import os
 from collections.abc import Awaitable, Callable
 from typing import Any
 
 import pydantic_monty as monty_lib
 
+from omniagent.config import settings
 from omniagent.worker.models import ToolSnapshot
 
-_MONTY_WORKERS = int(os.environ.get("MONTY_EXECUTOR_WORKERS", "4"))
-_MONTY_TIMEOUT = int(os.environ.get("MONTY_EXECUTION_TIMEOUT", "30"))
+_MONTY_WORKERS = settings.monty_executor_workers
+_MONTY_TIMEOUT = settings.monty_execution_timeout
 _monty_executor: concurrent.futures.ThreadPoolExecutor | None = None
 
 

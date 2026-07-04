@@ -1,6 +1,5 @@
 """Postgres connection pool (psycopg async)."""
 
-import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -13,7 +12,9 @@ _pool: AsyncConnectionPool | None = None
 
 async def init_pool() -> None:
     global _pool
-    dsn = os.environ["DATABASE_URL"]
+    from omniagent.config import settings
+
+    dsn = settings.database_url
     _pool = AsyncConnectionPool(dsn, min_size=2, max_size=10, open=False)
     await _pool.open()
 
