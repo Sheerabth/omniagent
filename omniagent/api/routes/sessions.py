@@ -14,6 +14,7 @@ from omniagent.api.models import (
     SessionCreate,
     SessionRecord,
     SessionStatus,
+    ToolCallEntry,
 )
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
@@ -187,11 +188,12 @@ async def get_session_status(
         (m["content"] for m in reversed(messages) if m.get("role") == "assistant"),
         None,
     )
+    tool_calls = [ToolCallEntry.model_validate(tc) for tc in (session["tool_calls"] or [])]
     return SessionStatus(
         status=session["status"],
         result=last_assistant,
         messages=messages,
-        tool_calls=session["tool_calls"] or [],
+        tool_calls=tool_calls,
         agent_name=session["agent_name"],
         agent_version=session["agent_version"],
         toolbox_versions=session["toolbox_versions"] or {},

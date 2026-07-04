@@ -33,7 +33,6 @@ from omniagent.worker.native import NATIVE_TOOL_DESCRIPTIONS, NATIVE_TOOL_SCHEMA
 logger = logging.getLogger(__name__)
 
 _DEFAULT_TOOL_TIMEOUT = int(os.environ.get("TOOL_EXECUTION_TIMEOUT", "30"))
-_MAX_HISTORY_TURNS = int(os.environ.get("MAX_HISTORY_TURNS", "50"))
 _CANCEL_MARKER = "[CANCELLED: previous response was stopped by the user before completing]"
 
 app = procrastinate.App(connector=PsycopgConnector(conninfo=os.environ.get("DATABASE_URL", "")))
@@ -338,30 +337,24 @@ async def _emit_event(session_id: str, event: BaseEvent) -> None:
         elif event.type == "tool_result":
             ev = event.model_dump(exclude_none=True)
             if ev.get("input") is not None and "output" in ev:
+                entry_json = json.dumps(
+                    ToolCallEntry(
+                        tool_name=ev.get("tool") or "",
+                        input=ev.get("input") or {},
+                        output=ev.get("output"),
+                        harness=ev.get("harness"),
+                        skill_name=ev.get("skill_name"),
+                        timestamp=datetime.now(UTC),
+                        success=ev.get("success", True),
+                        error=ev.get("error"),
+                    ).model_dump(mode="json")
+                )
                 async with get_conn() as conn:
-                    rows = await conn.execute(
-                        "SELECT tool_calls FROM sessions WHERE id=%s", (session_id,)
+                    await conn.execute(
+                        "UPDATE sessions SET tool_calls = tool_calls || %s::jsonb WHERE id=%s",
+                        (f"[{entry_json}]", session_id),
                     )
-                    sess = await rows.fetchone()
-                    if sess:
-                        tool_calls = sess["tool_calls"] or []
-                        tool_calls.append(
-                            ToolCallEntry(
-                                tool_name=ev.get("tool") or "",
-                                input=ev.get("input") or {},
-                                output=ev.get("output"),
-                                harness=ev.get("harness"),
-                                skill_name=ev.get("skill_name"),
-                                timestamp=datetime.now(UTC),
-                                success=ev.get("success", True),
-                                error=ev.get("error"),
-                            ).model_dump(mode="json")
-                        )
-                        await conn.execute(
-                            "UPDATE sessions SET tool_calls=%s WHERE id=%s",
-                            (json.dumps(tool_calls), session_id),
-                        )
-                        await conn.execute("SELECT pg_notify(%s, %s)", (ch, "update"))
+                    await conn.execute("SELECT pg_notify(%s, %s)", (ch, "update"))
         else:
             async with get_conn() as conn:
                 await conn.execute("SELECT pg_notify(%s, %s)", (ch, event.type))
@@ -390,26 +383,31 @@ async def _complete_session(session_id: str, result: str, prior_count: int) -> N
 
     ch = _CH(session_id)
     has_queued_input = False
+    now = datetime.now(UTC).isoformat()
     async with get_conn() as conn:
+        # ponytail: jsonb_array_length avoids transferring full messages array.
+        # FOR UPDATE still required for cancel_requested atomicity.
         rows = await conn.execute(
-            "SELECT messages, cancel_requested FROM sessions WHERE id=%s FOR UPDATE", (session_id,)
+            "SELECT jsonb_array_length(messages) as msg_count, cancel_requested "
+            "FROM sessions WHERE id=%s FOR UPDATE",
+            (session_id,),
         )
         sess = await rows.fetchone()
         if not sess:
             return
-        messages = sess["messages"] or []
-        has_queued_input = len(messages) > prior_count
+        has_queued_input = (sess["msg_count"] or 0) > prior_count
 
         if sess["cancel_requested"]:
             logger.info("session %s cancel requested, discarding this turn's result", session_id)
-            marker = MessageRecord(
-                role="user", content=_CANCEL_MARKER, timestamp=datetime.now(UTC).isoformat()
-            ).model_dump()
-            messages = messages[:prior_count] + [marker] + messages[prior_count:]
+            marker_json = json.dumps(
+                MessageRecord(role="user", content=_CANCEL_MARKER, timestamp=now).model_dump()
+            )
             next_status = "pending" if has_queued_input else "cancelled"
             await conn.execute(
-                "UPDATE sessions SET status=%s, messages=%s, cancel_requested=false, updated_at=NOW() WHERE id=%s",
-                (next_status, json.dumps(messages), session_id),
+                "UPDATE sessions SET status=%s, "
+                "messages = jsonb_insert(messages, %s::text[], %s::jsonb), "
+                "cancel_requested=false, updated_at=NOW() WHERE id=%s",
+                (next_status, f"{{{prior_count}}}", f"[{marker_json}]", session_id),
             )
             # Always 'cancelled' here — the first turn is stopped, full stop.
             # If there's queued input, the follow-up turn's own lifecycle
@@ -419,19 +417,15 @@ async def _complete_session(session_id: str, result: str, prior_count: int) -> N
             # can stop the second message independently.
             await conn.execute("SELECT pg_notify(%s, %s)", (ch, "cancelled"))
         else:
-            messages.append(
-                MessageRecord(
-                    role="assistant",
-                    content=result,
-                    timestamp=datetime.now(UTC).isoformat(),
-                ).model_dump()
+            assistant_json = json.dumps(
+                MessageRecord(role="assistant", content=result, timestamp=now).model_dump()
             )
-            if len(messages) > _MAX_HISTORY_TURNS * 2:
-                messages = messages[-(_MAX_HISTORY_TURNS * 2) :]
             next_status = "pending" if has_queued_input else "idle"
             await conn.execute(
-                "UPDATE sessions SET status=%s, messages=%s, updated_at=NOW() WHERE id=%s",
-                (next_status, json.dumps(messages), session_id),
+                "UPDATE sessions SET status=%s, "
+                "messages = messages || %s::jsonb, "
+                "updated_at=NOW() WHERE id=%s",
+                (next_status, f"[{assistant_json}]", session_id),
             )
             await conn.execute("SELECT pg_notify(%s, %s)", (ch, "complete"))
 
@@ -944,26 +938,38 @@ async def _handle_defer(
 
     async with get_conn() as conn:
         rows = await conn.execute(
-            "SELECT messages, cancel_requested FROM sessions WHERE id=%s FOR UPDATE", (session_id,)
+            "SELECT jsonb_array_length(messages) as msg_count, cancel_requested "
+            "FROM sessions WHERE id=%s FOR UPDATE",
+            (session_id,),
         )
         sess = await rows.fetchone()
         if not sess:
             return
-        current_messages = sess["messages"] or []
-        queued = current_messages[prior_count:]
         cancelled = sess["cancel_requested"]
 
         if cancelled:
             logger.info("session %s cancel requested, discarding defer", session_id)
-            cancelled_with_queued_input = bool(queued)
-            marker = MessageRecord(role="user", content=_CANCEL_MARKER, timestamp=now).model_dump()
-            messages_with_marker = current_messages[:prior_count] + [marker] + queued
+            marker_json = json.dumps(
+                MessageRecord(role="user", content=_CANCEL_MARKER, timestamp=now).model_dump()
+            )
+            cancelled_with_queued_input = (sess["msg_count"] or 0) > prior_count
             next_status = "pending" if cancelled_with_queued_input else "cancelled"
             await conn.execute(
-                "UPDATE sessions SET status=%s, messages=%s, cancel_requested=false, updated_at=NOW() WHERE id=%s",
-                (next_status, json.dumps(messages_with_marker), session_id),
+                "UPDATE sessions SET status=%s, "
+                "messages = jsonb_insert(messages, %s::text[], %s::jsonb), "
+                "cancel_requested=false, updated_at=NOW() WHERE id=%s",
+                (next_status, f"{{{prior_count}}}", f"[{marker_json}]", session_id),
             )
         else:
+            # ponytail: defer non-cancel path does complex splicing (truncate +
+            # append assistant + extend queued + append resume marker). Rare —
+            # only when agent calls defer_turn. Full array transfer is fine.
+            rows = await conn.execute("SELECT messages FROM sessions WHERE id=%s", (session_id,))
+            sess2 = await rows.fetchone()
+            if not sess2:
+                return
+            current_messages = sess2["messages"] or []
+            queued = current_messages[prior_count:]
             new_messages = current_messages[:prior_count]
             new_messages.append(
                 MessageRecord(role="assistant", content=result, timestamp=now).model_dump()
