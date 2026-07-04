@@ -54,6 +54,13 @@ These rules are load-bearing. Breaking them introduces subtle race conditions an
 
 **Encryption key is a Fernet key.** Generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. Set as `OMNIAGENT_ENCRYPTION_KEY`.
 
+**API and worker are both horizontally scalable — many processes, no shared memory.** Every change must hold under N api instances and N worker instances running concurrently, not just one of each.
+
+- No in-process state (module-level dict/list/queue, singleton object) as the source of truth for anything that outlives one request or one job. Postgres is the only shared state. A `ponytail:`-tagged per-process cache is fine only as a TTL'd optimization on top of that, never the record of truth.
+- Never assume the process that scheduled a job, opened a connection, or handled a prior request is the one handling the next one. No sticky sessions, no "the worker that started this turn finishes it."
+- Locks and singleton behavior (SSE hub connection, migrations, stuck-session sweep) must use Postgres advisory locks or row locks — see above. An in-process `asyncio.Lock` or `threading.Lock` only serializes within one instance; it does nothing across replicas.
+- Coordination between requests/jobs goes through the database (status columns, `FOR UPDATE`, `pg_notify`), never through direct process-to-process calls or in-memory pub/sub.
+
 ## Conventions
 
 - **`ponytail:` comments** mark deliberate shortcuts with known ceilings. They're tracked debt, not ignorance — the comment names what was skipped and when to upgrade. E.g. `# ponytail: dict cache, per-process. TTL 60s. Hard cap 1000 entries.`

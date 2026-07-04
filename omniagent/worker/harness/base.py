@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from typing import Any
 
 from omniagent.api.models import MessageRecord
 from omniagent.worker.models import (
@@ -22,8 +23,15 @@ def make_monty_executor(
     tool_snapshot: dict[str, ToolSnapshot],
     tool_executor: ToolExecutor,
     emit_event: EventEmitter,
+    _lf_start_span: Any = None,
 ) -> MontyExecutor:
-    """Shared execute_python factory — emits tool_call/tool_result and runs monty."""
+    """Shared execute_python factory — emits tool_call/tool_result and runs monty.
+
+    If *_lf_start_span* is given, it is called as
+    ``_lf_start_span(name, input) -> span | None`` before execution and the
+    returned span is updated/ended afterward — this puts monty code into
+    the Langfuse trace like any other tool call.
+    """
     from omniagent.worker.monty import make_monty_tool
 
     inner = make_monty_tool(tool_snapshot, tool_executor)
@@ -31,6 +39,11 @@ def make_monty_executor(
     async def execute_python(code: str, observation: str) -> str:
         await emit_event(
             ToolCallEvent(tool="execute_python", input={"code": code, "observation": observation})
+        )
+        _lf_span = (
+            _lf_start_span("execute_python", {"code": code, "observation": observation})
+            if _lf_start_span
+            else None
         )
         try:
             result = await inner(code=code, observation=observation)
@@ -42,6 +55,9 @@ def make_monty_executor(
                     output=result,
                 )
             )
+            if _lf_span:
+                _lf_span.update(output=result)
+                _lf_span.end()
             return result
         except Exception as exc:
             await emit_event(
@@ -52,6 +68,9 @@ def make_monty_executor(
                     error=str(exc),
                 )
             )
+            if _lf_span:
+                _lf_span.update(output=str(exc))
+                _lf_span.end()
             raise
 
     execute_python.__name__ = "execute_python"

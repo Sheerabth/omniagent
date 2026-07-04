@@ -33,7 +33,6 @@ class Settings(BaseSettings):
     # ── tracing (langfuse — no-op if secret_key is unset) ────────────────
     langfuse_secret_key: str = ""
     langfuse_public_key: str = ""
-    langfuse_host: str = ""
 
     model_config = {
         "env_file": ".env",

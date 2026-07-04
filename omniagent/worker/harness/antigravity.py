@@ -3,6 +3,7 @@
 import inspect
 import json
 import logging
+import os
 from typing import Any, Protocol
 
 from google.antigravity import Agent
@@ -28,6 +29,26 @@ from omniagent.worker.models import (
 
 logger = logging.getLogger(__name__)
 
+# google-antigravity's subprocess.Popen inherits os.environ — no upstream
+# env override.  Replace with bare-minimum system vars.  Our worker settings
+# are cached in the `settings` singleton at module load; stripping everything
+# else is safe and keeps secrets out of the AI sandbox.
+_SANDBOX_ENV = frozenset(
+    {
+        "PATH",
+        "HOME",
+        "PWD",
+        "USER",
+        "SHELL",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "TZ",
+        "PYTHON_VERSION",
+        "PYTHON_SHA256",
+    }
+)
+
 _TYPE_MAP = {"string": str, "integer": int, "number": float, "boolean": bool}
 
 
@@ -39,8 +60,9 @@ class AntigravityTool(Protocol):
 
 class AntigravityAdapter(HarnessAdapter):
 
-    def __init__(self, api_key: str | None = None) -> None:
+    def __init__(self, api_key: str | None = None, _lf_start_span: Any = None) -> None:
         self._api_key = api_key
+        self._lf_start_span = _lf_start_span
 
     async def run(
         self,
@@ -75,9 +97,18 @@ class AntigravityAdapter(HarnessAdapter):
 
         await emit_event(ThinkingEvent(content="Starting Antigravity agent"))
 
-        async with Agent(config) as agent:
-            response = await agent.chat(latest_user)
-            result = await _extract_text(response)
+        # Replace entire environment with whitelist — the library's
+        # subprocess.Popen inherits os.environ and has no env override.
+        _saved_env = dict(os.environ)
+        os.environ.clear()
+        os.environ.update({k: v for k, v in _saved_env.items() if k in _SANDBOX_ENV})
+        try:
+            async with Agent(config) as agent:
+                response = await agent.chat(latest_user)
+                result = await _extract_text(response)
+        finally:
+            os.environ.clear()
+            os.environ.update(_saved_env)
 
         return result
 
@@ -97,7 +128,9 @@ class AntigravityAdapter(HarnessAdapter):
         tool_executor: ToolExecutor,
         emit_event: EventEmitter,
     ) -> MontyExecutor:
-        return make_monty_executor(tool_snapshot, tool_executor, emit_event)
+        return make_monty_executor(
+            tool_snapshot, tool_executor, emit_event, _lf_start_span=self._lf_start_span
+        )
 
 
 def _make_tool_fn(

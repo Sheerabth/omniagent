@@ -1189,6 +1189,16 @@ let chatSessionId = null;
 let chatSSE = null;
 let chatBusy = false;
 let chatDeferred = false;
+// How many leading entries of the session's messages array are reconciled
+// with the DOM. Assistant replies always append at the DB tail — even for a
+// message sent while a turn is in flight, which lands ahead of it in the
+// array (see _complete_session in job.py). So a same-tab optimistic user
+// bubble can already be on screen by the time that reply's fetch comes in;
+// _pendingUserNodes tracks those not-yet-DB-confirmed bubbles so the reply
+// can be spliced in before them instead of just tacked onto the end.
+let _confirmedCount = 0;
+let _pendingUserNodes = [];
+
 function updateStopVisibility() {
   const btn = document.getElementById('chat-stop');
   const visible = chatBusy || chatDeferred;
@@ -1293,10 +1303,11 @@ async function switchToSession(id) {
   document.getElementById('chat-messages').innerHTML = '';
   document.getElementById('chat-sidebar-items').innerHTML = '';
   document.getElementById('chat-send').disabled = false;
+  _confirmedCount = 0;
+  _pendingUserNodes = [];
   try {
     const status = await api('GET', '/sessions/' + id + '/status');
-    (status.messages || []).filter(isVisibleMessage).forEach(m => appendMsg(m.role, m.content));
-    renderSidebar(status.tool_calls || []);
+    _syncMessages(status);
     if (status.status === 'running' || status.status === 'pending') {
       setChatBusy(true);
       thinkingEl = appendThinking();
@@ -1335,6 +1346,8 @@ async function chatNewSession() {
   chatSSE && chatSSE.close();
   chatSSE = null;
   setChatBusy(false);
+  _confirmedCount = 0;
+  _pendingUserNodes = [];
   document.getElementById('chat-messages').innerHTML = '';
   document.getElementById('chat-sidebar-items').innerHTML = '';
   try {
@@ -1357,7 +1370,15 @@ async function chatSend() {
   if (!text || !chatSessionId) return;
 
   input.value = '';
-  appendMsg('user', text);
+  // Rendered immediately for instant feedback, even while a prior turn is
+  // still running — tracked in _pendingUserNodes so the reply that turn
+  // produces (which lands ahead of this message in the DB array — see
+  // _complete_session in job.py) gets spliced in before it, not after.
+  _pendingUserNodes.push(appendMsg('user', text));
+  // Keep the dots pinned below whatever's newest — otherwise a message sent
+  // while a prior turn's still in flight lands after them, reading as if
+  // the agent is still working on THIS message instead of the earlier one.
+  if (thinkingEl) document.getElementById('chat-messages').appendChild(thinkingEl);
 
   if (chatDeferred) {
     setChatDeferred(false);
@@ -1378,8 +1399,9 @@ async function chatSend() {
     return;
   }
 
-  // While busy, /run still appends durably server-side (see sessions.py) —
-  // no local queue needed, just don't open a second stream/thinking indicator.
+  // While busy, /run still appends durably server-side — no local queue
+  // needed, just don't open a second stream/thinking indicator on top of
+  // the one already tracking the in-flight turn.
   const wasBusy = chatBusy;
   if (!wasBusy) {
     chatRunId++;
@@ -1462,79 +1484,71 @@ function streamSession(sessionId) {
     if (chatSessionId !== sessionId) return;
     const ev = JSON.parse(e.data);
 
-    // The stream itself stays open across chained turns now — the server
-    // only ever closes it once status is confirmed resting (see sse.py).
-    // So the client never needs to guess-and-reopen; it just reflects
-    // whatever the server reports, on this same connection throughout.
-    if (ev.type === 'update') {
-      try {
-        const status = await api('GET', '/sessions/' + sessionId + '/status');
-        renderSidebar(status.tool_calls || []);
-      } catch(_) {}
-    } else if (ev.type === 'cancelling') {
+    if (ev.type === 'cancelling') {
       // Only relevant if cancel was triggered from another tab — our own
-      // chatStop() already did markStopping() on click. Just update the
-      // button, nothing else: the real status transition (cancelled, or
-      // running if more was queued) arrives as its own event when confirmed.
+      // chatStop() already did markStopping() on click.
       markStopping();
-    } else if (ev.type === 'running') {
+      return;
+    }
+
+    // Every other event may carry a new assistant message and/or a tool
+    // call — pull the latest state and append only what's new so a fast
+    // back-to-back turn (reply 1 lands, turn 2 starts) still renders as two
+    // separate bubbles instead of both appearing together once the whole
+    // chain finishes. `ev.final` (set by sse.py from the DB status, not the
+    // notify type) is the only thing that decides whether the stream closes
+    // — a 'complete' can mean "this turn's done, chaining into the next"
+    // just as easily as "session fully idle now".
+    try {
+      _syncMessages(await api('GET', '/sessions/' + sessionId + '/status'));
+    } catch(_) {}
+
+    // A cancelled or errored turn discards its result instead of appending
+    // a reply — so it never consumes its pending slot via the assistant
+    // branch in _syncMessages. Retire it here, or the next turn's real
+    // reply anchors before the wrong pending send.
+    if ((ev.type === 'cancelled' || ev.type === 'error') && _pendingUserNodes.length) {
+      _pendingUserNodes.shift();
+    }
+
+    if (ev.type === 'error') {
+      chatSSE.close();
+      chatSSE = null;
+      removeThinking();
+      setChatBusy(false);
+      setChatDeferred(false);
+      _patchSessionStatus(sessionId, 'failed');
+      appendMsg('assistant', '⚠ ' + (ev.reason || 'session failed'));
+      return;
+    }
+
+    if (ev.final) {
+      chatSSE.close();
+      chatSSE = null;
+      removeThinking();
+      setChatBusy(false);
+      setChatDeferred(ev.type === 'deferred');
+      _patchSessionStatus(sessionId, ev.type === 'complete' ? 'idle' : ev.type);
+      return;
+    }
+
+    // Not final — session is still going (mid-turn, or chaining into the
+    // next one on this same connection).
+    if (ev.type === 'running') {
       _patchSessionStatus(sessionId, 'running');
       chatDeferred = false;
       chatBusy = true;
       updateStopVisibility();
       if (!thinkingEl) thinkingEl = appendThinking();
-    } else if (ev.type === 'deferred') {
-      _patchSessionStatus(sessionId, 'deferred');
-      setChatDeferred(true);
-      setChatBusy(false);
-      removeThinking();
-      try {
-        const status = await api('GET', '/sessions/' + sessionId + '/status');
-        renderSidebar(status.tool_calls || []);
-        document.getElementById('chat-messages').innerHTML = '';
-        (status.messages || []).filter(isVisibleMessage).forEach(m => appendMsg(m.role, m.content));
-      } catch(_) {}
-    } else if (ev.type === 'complete') {
-      // Close the stream BEFORE any async work — EventSource reconnects by
-      // default when the server closes the connection, and awaiting inside
-      // this handler gives the browser time to reconnect (which re-enters
-      // this handler with another 'complete', looping forever and preventing
-      // the cleanup below from ever running). If the status check shows a
-      // chained turn, we reopen a fresh stream after.
-      chatSSE.close();
-      chatSSE = null;
-      try {
-        const status = await api('GET', '/sessions/' + sessionId + '/status');
-        renderSidebar(status.tool_calls || []);
-        document.getElementById('chat-messages').innerHTML = '';
-        (status.messages || []).filter(isVisibleMessage).forEach(m => appendMsg(m.role, m.content));
-        if (status.status === 'pending' || status.status === 'running') {
-          _patchSessionStatus(sessionId, status.status);
-          streamSession(sessionId); // reopen for the chained turn
-          return;
-        }
-      } catch(_) { appendMsg('assistant', '⚠ could not fetch result'); }
-      removeThinking();
-      setChatBusy(false);
-      setChatDeferred(false);
-      _patchSessionStatus(sessionId, 'idle');
-    } else if (ev.type === 'error') {
-      removeThinking();
-      chatSSE.close();
-      setChatBusy(false);
-      setChatDeferred(false);
-      _patchSessionStatus(sessionId, 'failed');
-      appendMsg('assistant', '⚠ ' + (ev.reason || 'session failed'));
     } else if (ev.type === 'cancelled') {
-      // First message confirmed stopped — clean up but keep the stream
-      // alive. If more was queued, a follow-up 'running' event arrives
-      // next on this same connection (server keeps it open when status
-      // goes to 'pending' instead of 'cancelled').
+      // First turn confirmed stopped, more queued — a 'running' for the
+      // follow-up turn arrives next on this same connection.
       removeThinking();
       setChatBusy(false);
       setChatDeferred(false);
       _patchSessionStatus(sessionId, 'cancelled');
     }
+    // 'update' / non-final 'complete': sidebar+messages already refreshed above.
   };
 
   chatSSE.onerror = () => {
@@ -1546,14 +1560,53 @@ function streamSession(sessionId) {
   };
 }
 
-function appendMsg(role, text) {
-  const msgs = document.getElementById('chat-messages');
+function buildMsgNode(role, text) {
   const div = document.createElement('div');
   div.className = 'msg ' + role;
   div.innerHTML = `<div class="msg-bubble">${role === 'assistant' ? marked.parse(text) : escHtml(text)}</div>`;
+  return div;
+}
+
+function appendMsg(role, text) {
+  const msgs = document.getElementById('chat-messages');
+  const div = buildMsgNode(role, text);
   msgs.appendChild(div);
   msgs.scrollTop = msgs.scrollHeight;
   return div;
+}
+
+// Reconcile the DOM with the server's messages array. New assistant entries
+// are spliced in before the oldest still-unconfirmed optimistic user bubble
+// (see _pendingUserNodes above) instead of always landing at the end, so a
+// reply to message 1 renders ahead of an already-sent-but-unanswered
+// message 2. New user entries (sent from another tab, or via resume) either
+// confirm the next pending bubble or, if none is pending, render fresh.
+function _syncMessages(status) {
+  renderSidebar(status.tool_calls || []);
+  const msgs = document.getElementById('chat-messages');
+  const visible = (status.messages || []).filter(isVisibleMessage);
+  for (let i = _confirmedCount; i < visible.length; i++) {
+    const m = visible[i];
+    if (m.role === 'assistant') {
+      // This reply answers the OLDEST pending send (_pendingUserNodes[0]),
+      // which is always already on screen — so the reply belongs right
+      // after it, i.e. before whichever pending send comes next. Anchoring
+      // to [0] itself (and shifting eagerly on the 'user' branch below)
+      // would place it ahead of the message it's actually answering. When
+      // there's no next pending send, fall back to the dots (still on
+      // screen at this point — removeThinking() runs after this) instead
+      // of the raw end, or the reply would land below them.
+      const anchor = _pendingUserNodes[1] || thinkingEl || null;
+      msgs.insertBefore(buildMsgNode(m.role, m.content), anchor);
+      _pendingUserNodes.shift();
+    } else if (!_pendingUserNodes.length) {
+      appendMsg(m.role, m.content); // not one of ours (other tab, etc.)
+    }
+    // else: one of our own optimistic sends, already rendered — nothing to do
+    // until the reply that answers it arrives (handled above).
+  }
+  _confirmedCount = visible.length;
+  msgs.scrollTop = msgs.scrollHeight;
 }
 
 function appendThinking() {

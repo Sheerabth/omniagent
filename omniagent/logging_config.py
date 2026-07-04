@@ -34,12 +34,21 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(payload, default=str)
 
 
+class _SuppressRawWsFilter(logging.Filter):
+    """Drop google-antigravity RAW WS MSG logs — they echo full sandbox output
+    including env vars, secrets, and command results."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not (record.name == "root" and "RAW WS MSG" in record.getMessage())
+
+
 def configure_logging() -> None:
     from omniagent.config import settings
 
     level = settings.log_level.upper()
     handler = logging.StreamHandler()
     handler.setFormatter(JsonFormatter())
+    handler.addFilter(_SuppressRawWsFilter())
     root = logging.getLogger()
     root.handlers = [handler]
     root.setLevel(level)

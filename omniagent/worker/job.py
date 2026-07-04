@@ -2,18 +2,19 @@
 
 import asyncio
 import base64
+import contextlib
 import json
 import logging
 import os
 import re
 import time
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Protocol
 from urllib.parse import quote
 
 import httpx
 import procrastinate
-from langfuse import Langfuse
+from langfuse import Langfuse, propagate_attributes
 from procrastinate import PsycopgConnector
 
 from omniagent.api.crypto import decrypt_auth_context
@@ -25,7 +26,6 @@ from omniagent.worker.models import (
     ErrorEvent,
     SessionConfig,
     SystemPromptEvent,
-    ThinkingEvent,
     ToolboxSnapshot,
     ToolCallEvent,
     ToolResultEvent,
@@ -34,6 +34,25 @@ from omniagent.worker.models import (
 from omniagent.worker.native import NATIVE_TOOL_DESCRIPTIONS, NATIVE_TOOL_SCHEMAS, DeferInfo
 
 logger = logging.getLogger(__name__)
+
+
+class _LangfuseOp(Protocol):
+    def __call__(self, *args: Any, **kwargs: Any) -> Any: ...
+
+
+def _safe_lf(
+    fn: _LangfuseOp, *args: Any, _warning: str = "langfuse call failed", **kwargs: Any
+) -> Any:
+    """Call *fn* and return its result, or ``None`` on failure. Never raises.
+
+    Every langfuse call goes through this — tracing must never block AI flows.
+    """
+    try:
+        return fn(*args, **kwargs)
+    except Exception as exc:
+        logger.warning("%s: %s", _warning, exc)
+        return None
+
 
 # ponytail: no-op if LANGFUSE_SECRET_KEY not set — no config change needed
 # for deployments that don't run langfuse.
@@ -410,10 +429,11 @@ async def _complete_session(session_id: str, result: str, prior_count: int) -> N
                 MessageRecord(role="user", content=_CANCEL_MARKER, timestamp=now).model_dump()
             )
             next_status = "pending" if has_queued_input else "cancelled"
+            clear_trace = "" if has_queued_input else ", langfuse_trace_id = NULL"
             await conn.execute(
-                "UPDATE sessions SET status=%s, "
-                "messages = jsonb_insert(messages, %s::text[], %s::jsonb), "
-                "cancel_requested=false, updated_at=NOW() WHERE id=%s",
+                f"UPDATE sessions SET status=%s, "
+                f"messages = jsonb_insert(messages, %s::text[], %s::jsonb), "
+                f"cancel_requested=false, updated_at=NOW(){clear_trace} WHERE id=%s",
                 (next_status, f"{{{prior_count}}}", f"[{marker_json}]", session_id),
             )
             # Always 'cancelled' here — the first turn is stopped, full stop.
@@ -428,10 +448,11 @@ async def _complete_session(session_id: str, result: str, prior_count: int) -> N
                 MessageRecord(role="assistant", content=result, timestamp=now).model_dump()
             )
             next_status = "pending" if has_queued_input else "idle"
+            clear_trace = "" if has_queued_input else ", langfuse_trace_id = NULL"
             await conn.execute(
-                "UPDATE sessions SET status=%s, "
-                "messages = messages || %s::jsonb, "
-                "updated_at=NOW() WHERE id=%s",
+                f"UPDATE sessions SET status=%s, "
+                f"messages = messages || %s::jsonb, "
+                f"updated_at=NOW(){clear_trace} WHERE id=%s",
                 (next_status, f"[{assistant_json}]", session_id),
             )
             await conn.execute("SELECT pg_notify(%s, %s)", (ch, "complete"))
@@ -562,19 +583,19 @@ async def run_agent_job(session_id: str) -> None:
     # Shared defer state — set by native.defer_turn / native.defer_turn_until inside tool_exec
     _defer_state: dict[str, DeferInfo] = {}
 
-    # Langfuse trace — wraps the entire turn with nested generations and spans.
-    last_user = history[-1].content if history and history[-1].role == "user" else None
-    trace = (
-        _langfuse.trace(  # pyright: ignore[reportAttributeAccessIssue, reportOptionalMemberAccess]
-            name=config.agent_name,
-            session_id=session_id,
-            user_id=config.agent_name,
-            metadata={"harness": harness, "model": model, "monty": use_monty},
-            input=last_user,
-        )
-        if _langfuse
-        else None
+    # Langfuse trace — best-effort, must never block the AI flow.
+    # Last real user message (skip [RESUME] and [CANCELLED] markers).
+    last_user = next(
+        (
+            m.content
+            for m in reversed(history)
+            if m.role == "user" and not m.content.startswith("[")
+        ),
+        None,
     )
+    # Closures below capture `trace` by name — it's None until the
+    # start_as_current_observation context manager assigns it.
+    trace = None
 
     async def _do_tool_exec(tool_name: str, input_data: dict[str, Any]) -> dict[str, Any]:
         # Native tools are handled here, not by the HTTP executor
@@ -884,77 +905,177 @@ async def run_agent_job(session_id: str) -> None:
         return output
 
     async def tool_exec(tool_name: str, input_data: dict[str, Any]) -> dict[str, Any]:
-        _lf_span = trace.span(name=tool_name, input=input_data) if trace else None
-        result = await _do_tool_exec(tool_name, input_data)
-        if _lf_span:
-            _lf_span.update(output=result).end()
-        return result
-
-    async def emit(event: BaseEvent) -> None:
-        if trace and isinstance(event, ThinkingEvent):
-            trace.span(name="thinking", input=event.content[:200] if event.content else None).end()
-        await _emit_event(session_id, event)
-
-    await emit(SystemPromptEvent(content=system_prompt, input=history))
-
-    try:
-        if harness == "antigravity":
-            from omniagent.worker.harness.antigravity import AntigravityAdapter
-
-            adapter = AntigravityAdapter(api_key=llm_api_key)
-        elif harness == "claude":
-            from omniagent.worker.harness.claude import ClaudeAdapter
-
-            adapter = ClaudeAdapter(api_key=llm_api_key)
-        else:
-            raise ValueError(f"Unknown harness: {harness!r}")
-
-        generation = (
-            trace.generation(
-                name=f"{harness}/{model}",
-                model=model,
-                input=last_user,
+        _lf_span = (
+            _safe_lf(
+                trace.start_observation,
+                name=tool_name,
+                as_type="span",
+                input=input_data,
+                _warning="langfuse tool span failed",
             )
             if trace
             else None
         )
-        result = await adapter.run(
-            system_prompt=system_prompt,
-            history=history,
-            tool_executor=tool_exec,
-            emit_event=emit,
-            use_monty=use_monty,
-            tool_snapshot=tool_snapshot,
-            model=model,
-        )
-        if generation:
-            generation.end(output=result)
-        if trace:
-            trace.update(output=result)
+        result = await _do_tool_exec(tool_name, input_data)
+        if _lf_span:
+            _safe_lf(_lf_span.update, output=result, _warning="langfuse span end failed")
+            _safe_lf(_lf_span.end, _warning="langfuse span end failed")
+        return result
 
-        if defer := _defer_state.get("info"):
-            await _handle_defer(session_id, result, history, defer)
-            outcome = "deferred"
-        else:
-            await _complete_session(session_id, result, len(history))
-            outcome = "completed"
-        logger.info(
-            "run_agent_job finished",
-            extra={
-                "session_id": session_id,
-                "outcome": outcome,
-                "duration_ms": round((time.monotonic() - job_start) * 1000),
-            },
+    async def emit(event: BaseEvent) -> None:
+        await _emit_event(session_id, event)
+
+    # One Langfuse trace per session — chained turns (defer → follow-up)
+    # reuse the same trace_id so they appear as one trace in the UI.
+    _lf_existing_trace_id: str | None = None
+    if _langfuse:
+        try:
+            async with get_conn() as conn:
+                rows = await conn.execute(
+                    "SELECT langfuse_trace_id FROM sessions WHERE id = %s",
+                    (session_id,),
+                )
+                row = await rows.fetchone()
+            if row and row["langfuse_trace_id"]:
+                _lf_existing_trace_id = row["langfuse_trace_id"]
+        except Exception:
+            pass
+
+    _lf_root_ctx = contextlib.nullcontext()
+    if _langfuse:
+        _lf_kwargs: dict[str, Any] = {
+            "name": config.agent_name,
+            "as_type": "span",
+            "input": last_user,
+            "metadata": {"harness": harness, "model": model, "monty": use_monty},
+        }
+        if _lf_existing_trace_id:
+            # Follow-up job — join existing trace.
+            _lf_kwargs["trace_context"] = {"trace_id": _lf_existing_trace_id}
+        # For new traces, don't pass trace_context — let
+        # start_as_current_observation create the trace naturally.
+        _lf_root_ctx = (
+            _safe_lf(
+                _langfuse.start_as_current_observation,
+                _warning="langfuse trace creation failed",
+                **_lf_kwargs,
+            )
+            or contextlib.nullcontext()
         )
 
-    except Exception as exc:
-        logger.exception(
-            "run_agent_job failed for session %s",
-            session_id,
-            extra={"duration_ms": round((time.monotonic() - job_start) * 1000)},
-        )
-        await emit(ErrorEvent(reason=str(exc)))
-        raise
+    with _lf_root_ctx as root_span:
+        if root_span is not None:
+            trace = root_span  # closures now see the real trace via name capture
+            # Persist trace_id from the actual trace (first job only).
+            if _langfuse and not _lf_existing_trace_id:
+                try:
+                    _actual_id = _langfuse.get_current_trace_id()
+                    if _actual_id:
+                        async with get_conn() as conn:
+                            await conn.execute(
+                                "UPDATE sessions SET langfuse_trace_id = %s WHERE id = %s",
+                                (_actual_id, session_id),
+                            )
+                except Exception:
+                    pass
+
+        prop_ctx = contextlib.nullcontext()
+        if _langfuse:
+            prop_ctx = (
+                _safe_lf(
+                    propagate_attributes,
+                    session_id=session_id,
+                    user_id=config.agent_name,
+                    _warning="langfuse propagate_attributes failed",
+                )
+                or contextlib.nullcontext()
+            )
+
+        with prop_ctx:
+            await emit(SystemPromptEvent(content=system_prompt, input=history))
+
+            try:
+                # Langfuse span factory for monty code — thread through
+                # the adapter so execute_python calls appear in trace.
+                def _mk_lf_span(name: str, input_data: Any) -> Any:
+                    if not trace:
+                        return None
+                    return _safe_lf(
+                        trace.start_observation,
+                        name=name,
+                        as_type="span",
+                        input=input_data,
+                        _warning=f"langfuse {name} span failed",
+                    )
+
+                if harness == "antigravity":
+                    from omniagent.worker.harness.antigravity import AntigravityAdapter
+
+                    adapter = AntigravityAdapter(api_key=llm_api_key, _lf_start_span=_mk_lf_span)
+                elif harness == "claude":
+                    from omniagent.worker.harness.claude import ClaudeAdapter
+
+                    adapter = ClaudeAdapter(api_key=llm_api_key, _lf_start_span=_mk_lf_span)
+                else:
+                    raise ValueError(f"Unknown harness: {harness!r}")
+
+                generation = (
+                    _safe_lf(
+                        trace.start_observation,
+                        name=f"{harness}/{model}",
+                        as_type="generation",
+                        model=model,
+                        input=last_user,
+                        _warning="langfuse generation creation failed",
+                    )
+                    if trace
+                    else None
+                )
+                result = await adapter.run(
+                    system_prompt=system_prompt,
+                    history=history,
+                    tool_executor=tool_exec,
+                    emit_event=emit,
+                    use_monty=use_monty,
+                    tool_snapshot=tool_snapshot,
+                    model=model,
+                )
+                if generation:
+                    _safe_lf(
+                        generation.update,
+                        output=result,
+                        _warning="langfuse generation end failed",
+                    )
+                    _safe_lf(generation.end, _warning="langfuse generation end failed")
+                if trace:
+                    _safe_lf(trace.update, output=result, _warning="langfuse trace end failed")
+                    _safe_lf(trace.end, _warning="langfuse trace end failed")
+                if _langfuse:
+                    _safe_lf(_langfuse.flush, _warning="langfuse flush failed")
+
+                if defer := _defer_state.get("info"):
+                    await _handle_defer(session_id, result, history, defer)
+                    outcome = "deferred"
+                else:
+                    await _complete_session(session_id, result, len(history))
+                    outcome = "completed"
+                logger.info(
+                    "run_agent_job finished",
+                    extra={
+                        "session_id": session_id,
+                        "outcome": outcome,
+                        "duration_ms": round((time.monotonic() - job_start) * 1000),
+                    },
+                )
+
+            except Exception as exc:
+                logger.exception(
+                    "run_agent_job failed for session %s",
+                    session_id,
+                    extra={"duration_ms": round((time.monotonic() - job_start) * 1000)},
+                )
+                await emit(ErrorEvent(reason=str(exc)))
+                raise
 
 
 async def _handle_defer(
@@ -1000,10 +1121,11 @@ async def _handle_defer(
             )
             cancelled_with_queued_input = (sess["msg_count"] or 0) > prior_count
             next_status = "pending" if cancelled_with_queued_input else "cancelled"
+            clear_trace = "" if cancelled_with_queued_input else ", langfuse_trace_id = NULL"
             await conn.execute(
-                "UPDATE sessions SET status=%s, "
-                "messages = jsonb_insert(messages, %s::text[], %s::jsonb), "
-                "cancel_requested=false, updated_at=NOW() WHERE id=%s",
+                f"UPDATE sessions SET status=%s, "
+                f"messages = jsonb_insert(messages, %s::text[], %s::jsonb), "
+                f"cancel_requested=false, updated_at=NOW(){clear_trace} WHERE id=%s",
                 (next_status, f"{{{prior_count}}}", f"[{marker_json}]", session_id),
             )
         else:

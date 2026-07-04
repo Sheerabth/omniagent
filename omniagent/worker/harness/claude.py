@@ -29,8 +29,9 @@ logger = logging.getLogger(__name__)
 
 class ClaudeAdapter(HarnessAdapter):
 
-    def __init__(self, api_key: str | None = None) -> None:
+    def __init__(self, api_key: str | None = None, _lf_start_span: Any = None) -> None:
         self._api_key = api_key
+        self._lf_start_span = _lf_start_span
 
     async def run(
         self,
@@ -42,7 +43,13 @@ class ClaudeAdapter(HarnessAdapter):
         tool_snapshot: dict[str, ToolSnapshot],
         model: str = "",
     ) -> str:
-        mcp_server = _build_mcp_server(tool_snapshot, tool_executor, emit_event, use_monty)
+        mcp_server = _build_mcp_server(
+            tool_snapshot,
+            tool_executor,
+            emit_event,
+            use_monty,
+            _lf_start_span=self._lf_start_span,
+        )
 
         options = ClaudeAgentOptions(
             tools=[],
@@ -78,6 +85,7 @@ def _build_mcp_server(
     tool_executor: ToolExecutor,
     emit_event: EventEmitter,
     use_monty: bool,
+    _lf_start_span: Any = None,
 ) -> Server:
     server = Server("omniagent-tools")
 
@@ -124,7 +132,9 @@ def _build_mcp_server(
         return tools
 
     monty_handler = (
-        make_monty_executor(tool_snapshot, tool_executor, emit_event) if use_monty else None
+        make_monty_executor(tool_snapshot, tool_executor, emit_event, _lf_start_span=_lf_start_span)
+        if use_monty
+        else None
     )
 
     @server.call_tool()
