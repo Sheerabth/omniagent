@@ -52,6 +52,7 @@ packages = ["omniagent"]
 
 [dependency-groups]
 dev = [
+    "pip-audit",
     "pytest",
     "pytest-asyncio",
     "black",
