@@ -20,7 +20,6 @@ from omniagent.worker.queries import (
     select_pg_notify,
     session_messages_by_id,
     update_session_append_messages,
-    update_session_append_messages_clear_trace,
     update_session_cancel,
     update_session_cancel_clear_trace,
     update_session_deferred,
@@ -96,11 +95,9 @@ async def _complete_session(session_id: str, result: str, prior_count: int) -> N
                 MessageRecord(role="assistant", content=result, timestamp=now).model_dump()
             )
             next_status = SessionStatus.PENDING if has_queued_input else SessionStatus.IDLE
-            append_q = (
-                update_session_append_messages_clear_trace
-                if not has_queued_input
-                else update_session_append_messages
-            )
+            # Always keep langfuse_trace_id — idle sessions resume with next user
+            # message, which must reuse the same trace for continuity.
+            append_q = update_session_append_messages
             await conn.execute(
                 append_q,
                 {

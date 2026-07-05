@@ -101,14 +101,6 @@ update_session_append_messages = text(
     "WHERE id = :session_id"
 )
 
-# Normal complete path: same but also clear langfuse_trace_id
-update_session_append_messages_clear_trace = text(
-    "UPDATE sessions SET status = :status, "
-    "messages = messages || CAST(:messages AS jsonb), "
-    "updated_at = NOW(), langfuse_trace_id = NULL "
-    "WHERE id = :session_id"
-)
-
 # Defer non-cancel path: replace messages + deferred_payload
 update_session_deferred = text(
     "UPDATE sessions SET status = :status, "
