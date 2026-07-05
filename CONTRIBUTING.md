@@ -2,7 +2,7 @@
 
 ## Local setup
 
-**Requirements:** Python 3.12+, [uv](https://docs.astral.sh/uv/), PostgreSQL 16, Docker (for compose)
+**Requirements:** Python 3.14, [uv](https://docs.astral.sh/uv/), PostgreSQL 16, Docker (for compose)
 
 ```bash
 # 1. Clone and install deps
@@ -31,19 +31,29 @@ UI served at `http://localhost:8080`.
 # Copy and fill in secrets
 cp .env.example .env
 
-# Start everything: postgres → server (runs migrations) → worker
+# Start everything: Postgres → API → worker → nginx
 docker compose up --build
 ```
 
-Startup order: `postgres` healthy → `api` healthy (migrations done, `/health` returns 200) → `worker` starts.
+Startup order: `postgres` healthy → `api` healthy (migrations done, `/health` 200) → `worker` starts.
 
-**Linux only:** tools that call services on the host (e.g. `http://host.docker.internal:8001`) require a one-time firewall rule so Docker bridge networks can reach the host:
+### With test service
 
 ```bash
-sudo iptables -I INPUT -i br+ -p tcp --dport <port> -j ACCEPT
+docker compose -f docker-compose.yml -f docker-compose.test.yml up --build
 ```
 
-This rule resets on reboot. To persist it, use `iptables-save` / your distro's firewall manager.
+Mounts `test_service.py` into a worker-derivative container on a shared network.
+Worker tools reach it at `http://test_service:8001` — no `host.docker.internal`
+or iptables tricks needed. Test service OpenAPI spec at `http://localhost:8001/openapi.json`.
+
+### With Langfuse (self-hosted)
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.langfuse.yml up -d
+```
+
+Then set `LANGFUSE_BASE_URL=http://langfuse:3000` in `.env`.
 
 Health endpoint: `GET /health` — returns `{"status": "ok", "db": "ok"}` or 503 on DB failure.
 
@@ -73,3 +83,6 @@ uv run pytest
 | `TOOL_EXECUTION_TIMEOUT` | no | Seconds. Default `30` |
 | `MONTY_EXECUTION_TIMEOUT` | no | Seconds. Default `30` |
 | `MONTY_EXECUTOR_WORKERS` | no | Default `4` |
+| `LANGFUSE_SECRET_KEY` | no | Langfuse tracing (no-op if unset) |
+| `LANGFUSE_PUBLIC_KEY` | no | Langfuse public key |
+| `LANGFUSE_BASE_URL` | no | Langfuse instance URL (e.g. `https://cloud.langfuse.com`). Use `LANGFUSE_BASE_URL`, not `LANGFUSE_HOST` |
