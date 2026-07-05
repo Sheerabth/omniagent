@@ -4,6 +4,8 @@ import inspect
 import json
 import logging
 import os
+import subprocess
+from contextvars import ContextVar
 from typing import Any, Protocol
 
 from google.antigravity import Agent
@@ -18,6 +20,7 @@ except ImportError as exc:
     ) from exc
 
 from omniagent.api.models import MessageRecord
+from omniagent.worker.harness._env import _load_env_file
 from omniagent.worker.harness.base import HarnessAdapter, make_monty_executor
 from omniagent.worker.models import (
     EventEmitter,
@@ -50,6 +53,50 @@ _SANDBOX_ENV = frozenset(
 )
 
 _TYPE_MAP = {"string": str, "integer": int, "number": float, "boolean": bool}
+
+# Per-job env for the Antigravity subprocess.  The patched Popen.__init__
+# reads from this ContextVar — each concurrent job sets its own, so there's
+# no race on os.environ or subprocess.Popen.__init__.
+_antigravity_env_ctx: ContextVar[dict[str, str] | None] = ContextVar(
+    "_antigravity_env_ctx", default=None
+)
+
+
+def _build_antigravity_env() -> dict[str, str]:
+    """System baseline + .env.antigravity — secrets excluded."""
+    env = {k: v for k, v in os.environ.items() if k in _SANDBOX_ENV}
+    env.update(_load_env_file(".env.antigravity"))
+    return env
+
+
+# ── one-time monkey-patch at module load ────────────────────────────────
+
+_original_popen_init = subprocess.Popen.__init__
+
+
+def _patched_popen_init(self: Any, args: Any, **kwargs: Any) -> None:
+    ctx_env = _antigravity_env_ctx.get()
+    if ctx_env is not None and kwargs.get("env") is None:
+        kwargs["env"] = ctx_env
+    _original_popen_init(self, args, **kwargs)
+
+
+subprocess.Popen.__init__ = _patched_popen_init  # pyright: ignore[reportAttributeAccessIssue]
+
+
+def _assert_patch_intact() -> None:
+    """Guard against another library clobbering our Popen.__init__ patch.
+
+    ponytail: single global patch, no known conflicts in this venv today.
+    If this ever fires, someone re-patched subprocess.Popen.__init__ without
+    chaining to the previous value — fail loud so we don't silently leak the
+    full process env (secrets included) into the AI sandbox subprocess.
+    """
+    if subprocess.Popen.__init__ is not _patched_popen_init:
+        raise RuntimeError(
+            "subprocess.Popen.__init__ was re-patched by another library — "
+            "Antigravity env isolation is no longer in effect."
+        )
 
 
 class AntigravityTool(Protocol):
@@ -97,18 +144,23 @@ class AntigravityAdapter(HarnessAdapter):
 
         await emit_event(ThinkingEvent(content="Starting Antigravity agent"))
 
-        # Replace entire environment with whitelist — the library's
-        # subprocess.Popen inherits os.environ and has no env override.
-        _saved_env = dict(os.environ)
-        os.environ.clear()
-        os.environ.update({k: v for k, v in _saved_env.items() if k in _SANDBOX_ENV})
+        # Re-read .env.antigravity every run — edits take effect on the next
+        # job, no restart needed. Merge (not restore) is safe here: no
+        # await between this and Agent()'s sync validate/Popen calls below,
+        # so no other job's task can interleave and observe a half-applied
+        # write. Content is the same file for every job anyway — nothing to
+        # isolate per-job, nothing to snapshot/restore.
+        os.environ.update(_load_env_file(".env.antigravity"))
+        _assert_patch_intact()
+        # Set this job's env on the ContextVar — the patched Popen.__init__
+        # picks it up. No os.environ mutation, concurrent jobs don't race.
+        _token = _antigravity_env_ctx.set(_build_antigravity_env())
         try:
             async with Agent(config) as agent:
                 response = await agent.chat(latest_user)
                 result = await _extract_text(response)
         finally:
-            os.environ.clear()
-            os.environ.update(_saved_env)
+            _antigravity_env_ctx.reset(_token)
 
         return result
 

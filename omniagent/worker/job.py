@@ -7,7 +7,6 @@ auth, and prompt construction live in their own modules under ``worker/``.
 
 import contextlib
 import logging
-import os
 import time
 from typing import Any, Protocol
 
@@ -87,8 +86,6 @@ async def run_agent_job(session_id: str) -> None:
     native_tools = {name: _make_native_tool_snapshot(name) for name in NATIVE_TOOL_DESCRIPTIONS}
     tool_snapshot = {**config.tool_snapshot, **native_tools}
     system_prompt = _build_system_prompt(config, extra_tools=native_tools)
-
-    llm_api_key = os.environ.get(f"OMNIAGENT_{harness.upper()}_API_KEY")
 
     # Shared defer state — set by native.defer_turn / native.defer_turn_until
     _defer_state: dict[str, DeferInfo] = {}
@@ -225,11 +222,14 @@ async def run_agent_job(session_id: str) -> None:
                 if harness == "antigravity":
                     from omniagent.worker.harness.antigravity import AntigravityAdapter
 
-                    adapter = AntigravityAdapter(api_key=llm_api_key, _lf_start_span=_mk_lf_span)
+                    adapter = AntigravityAdapter(
+                        api_key=settings.antigravity_api_key or None,
+                        _lf_start_span=_mk_lf_span,
+                    )
                 elif harness == "claude":
                     from omniagent.worker.harness.claude import ClaudeAdapter
 
-                    adapter = ClaudeAdapter(api_key=llm_api_key, _lf_start_span=_mk_lf_span)
+                    adapter = ClaudeAdapter(_lf_start_span=_mk_lf_span)
                 else:
                     raise ValueError(f"Unknown harness: {harness!r}")
 

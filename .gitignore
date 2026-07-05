@@ -18,6 +18,8 @@ venv/
 .env
 .env.*
 !.env.example
+!.env.claude.example
+!.env.antigravity.example
 
 # IDE
 .idea/

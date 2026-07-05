@@ -58,6 +58,8 @@ These rules are load-bearing. Breaking them introduces subtle race conditions an
 
 **Encryption key is a Fernet key.** Generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. Set as `OMNIAGENT_ENCRYPTION_KEY`.
 
+**All env vars go through `config.py`.** Never use `os.environ` or `os.getenv` directly. Add every env var as a field on the `Settings` class in `omniagent/config.py` with a sensible default. Import the singleton: `from omniagent.config import settings`. The only exception is `config.py` itself (pydantic-settings reads from env).
+
 **No cross-module imports between `api/` and `worker/`.** `api/` must not import from `omniagent.worker`, and `worker/` must not import from `omniagent.api`. Shared code lives at the `omniagent/` package level (`omniagent.db`, `omniagent.crypto`, `omniagent.migrations`, `omniagent.config`). The only allowed cross-reference is `api/` importing `worker.job.run_agent_job` inside a function body (lazy import) to defer jobs — the procrastinate task queue requires this.
 
 **API and worker are both horizontally scalable — many processes, no shared memory.** Every change must hold under N api instances and N worker instances running concurrently, not just one of each.

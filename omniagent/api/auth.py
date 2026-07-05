@@ -11,7 +11,7 @@ Scopes: each api key has a list of scopes. `admin` is a wildcard for all scopes.
 """
 
 import logging
-from collections.abc import Callable
+from typing import Protocol
 
 from fastapi import HTTPException, Request, Security
 from fastapi.security import APIKeyHeader
@@ -52,7 +52,13 @@ async def require_any(request: Request, api_key: str | None = Security(_header_s
     await _resolve_request(request, api_key)
 
 
-def require_scope(scope: str) -> Callable:
+class _ScopeChecker(Protocol):
+    """FastAPI dependency — checks the request's API key has *scope*."""
+
+    async def __call__(self, request: Request, api_key: str | None) -> None: ...
+
+
+def require_scope(scope: str) -> _ScopeChecker:
     async def check(request: Request, api_key: str | None = Security(_header_scheme)) -> None:
         scopes = await _resolve_request(request, api_key)
         if "admin" in scopes or scope in scopes:

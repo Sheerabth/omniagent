@@ -107,15 +107,20 @@ git clone <repo>
 cd omniagent
 cp .env.example .env
 # Edit .env — at minimum set UI_PASSWORD and OMNIAGENT_ENCRYPTION_KEY
+
+# Set up provider keys (pick the harnesses you use)
+cp .env.claude.example .env.claude      # ANTHROPIC_* vars
+cp .env.antigravity.example .env.antigravity  # ANTIGRAVITY_API_KEY
+# Edit the files you need — create empty files for unused providers
 ```
 
 **All services:** `DATABASE_URL`, `LOG_LEVEL`
 
 **API:** `UI_PASSWORD`, `OMNIAGENT_ENCRYPTION_KEY`
 
-**Worker:** `OMNIAGENT_CLAUDE_API_KEY`, `OMNIAGENT_ANTIGRAVITY_API_KEY`, `WORKER_CONCURRENCY`, `MAX_HISTORY_TURNS`, `TOOL_EXECUTION_TIMEOUT`, `MONTY_EXECUTION_TIMEOUT`, `MONTY_EXECUTOR_WORKERS`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_BASE_URL`
+**Worker:** `WORKER_CONCURRENCY`, `MAX_HISTORY_TURNS`, `TOOL_EXECUTION_TIMEOUT`, `MONTY_EXECUTION_TIMEOUT`, `MONTY_EXECUTOR_WORKERS`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_BASE_URL`
 
-See `.env.example` for defaults.
+Provider keys live in `.env.claude` and `.env.antigravity` — see the `.example` files.
 
 ### 3. Start infrastructure
 

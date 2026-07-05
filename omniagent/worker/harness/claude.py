@@ -17,6 +17,7 @@ from mcp.types import TextContent
 from mcp.types import Tool as McpTool
 
 from omniagent.api.models import MessageRecord
+from omniagent.worker.harness._env import _load_env_file
 from omniagent.worker.harness.base import (
     EXECUTE_PYTHON_DESCRIPTION,
     HarnessAdapter,
@@ -28,9 +29,13 @@ logger = logging.getLogger(__name__)
 
 
 class ClaudeAdapter(HarnessAdapter):
+    """Claude harness via claude-agent-sdk.
 
-    def __init__(self, api_key: str | None = None, _lf_start_span: Any = None) -> None:
-        self._api_key = api_key
+    Reads ``ANTHROPIC_API_KEY`` from the environment — the SDK picks it up
+    directly; there is no api_key parameter because the SDK has no slot for it.
+    """
+
+    def __init__(self, _lf_start_span: Any = None) -> None:
         self._lf_start_span = _lf_start_span
 
     async def run(
@@ -51,6 +56,12 @@ class ClaudeAdapter(HarnessAdapter):
             _lf_start_span=self._lf_start_span,
         )
 
+        # Load .env.claude directly — users put whatever vars the agent needs
+        # in there. No prefix filtering, no container env passthrough.
+        # The SDK's env defaults to {} so without this the subprocess sees
+        # nothing.
+        _agent_env = _load_env_file(".env.claude")
+
         options = ClaudeAgentOptions(
             tools=[],
             model=model or None,
@@ -63,6 +74,7 @@ class ClaudeAdapter(HarnessAdapter):
                 )
             },
             permission_mode="bypassPermissions",
+            env=_agent_env,
         )
 
         prompt = _build_prompt_with_history(history)

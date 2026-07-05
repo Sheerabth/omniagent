@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     # ── worker ───────────────────────────────────────────────────────────
     worker_concurrency: int = 10
     tool_execution_timeout: int = 30
+    antigravity_api_key: str = ""
 
     # ── monty sandbox ────────────────────────────────────────────────────
     monty_executor_workers: int = 4

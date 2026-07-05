@@ -47,15 +47,18 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.worker
+    env_file:
+      - .env                    # shared vars (DATABASE_URL, encryption, langfuse)
     environment:
       DATABASE_URL: postgresql://omniagent:omniagent@postgres/omniagent
-      OMNIAGENT_CLAUDE_API_KEY: ${OMNIAGENT_CLAUDE_API_KEY:-}
-      OMNIAGENT_ANTIGRAVITY_API_KEY: ${OMNIAGENT_ANTIGRAVITY_API_KEY:-}
       OMNIAGENT_ENCRYPTION_KEY: ${OMNIAGENT_ENCRYPTION_KEY:-}
       WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-}
       LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
       LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
       LANGFUSE_BASE_URL: ${LANGFUSE_BASE_URL:-}
+    volumes:
+      - ./.env.claude:/app/.env.claude:ro
+      - ./.env.antigravity:/app/.env.antigravity:ro
     networks:
       - omniagent_net
     extra_hosts:
