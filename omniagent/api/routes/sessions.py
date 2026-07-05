@@ -14,7 +14,9 @@ from omniagent.api.models import (
     SessionRecord,
 )
 from omniagent.api.models import SessionStatus as SessionStatusResponse
-from omniagent.api.models import ToolCallEntry
+from omniagent.api.models import (
+    ToolCallEntry,
+)
 from omniagent.api.queries import (
     delete_session_by_id,
     insert_session,
