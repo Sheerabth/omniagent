@@ -21,16 +21,20 @@ router = APIRouter(prefix="/namespaces", tags=["namespaces"])
 @router.get("", response_model=list[NamespaceRecord])
 async def list_namespaces(_=Depends(require_scope("auth:read"))) -> list[NamespaceRecord]:
     async with get_conn() as conn:
-        tool_rows = await (await conn.execute(select_namespaces_with_tool_count)).fetchall()
+        tool_rows = (await conn.execute(select_namespaces_with_tool_count)).mappings().fetchall()
         if not tool_rows:
             return []
         namespaces = [r["namespace"] for r in tool_rows]
-        auth_rows = await (
-            await conn.execute(
-                select_namespace_auth_by_namespace_list,
-                (namespaces,),
+        auth_rows = (
+            (
+                await conn.execute(
+                    select_namespace_auth_by_namespace_list,
+                    {"namespaces": namespaces},
+                )
             )
-        ).fetchall()
+            .mappings()
+            .fetchall()
+        )
         schemes_map: dict[str, list[SchemeRecord]] = {}
         for r in auth_rows:
             dec = decrypt_auth_context(r["auth_context"])
@@ -58,22 +62,32 @@ async def set_namespace_auth(
     _=Depends(require_scope("auth:write")),
 ) -> SchemeRecord:
     async with get_conn() as conn:
-        count_row = await (
-            await conn.execute(select_tool_count_by_namespace, (namespace,))
-        ).fetchone()
+        count_row = (
+            (await conn.execute(select_tool_count_by_namespace, {"namespace": namespace}))
+            .mappings()
+            .fetchone()
+        )
         if not count_row or count_row["c"] == 0:
             raise HTTPException(404, "Namespace not found")
-        existing_row = await (
-            await conn.execute(
-                select_namespace_auth_for_update,
-                (namespace, scheme_name),
+        existing_row = (
+            (
+                await conn.execute(
+                    select_namespace_auth_for_update,
+                    {"namespace": namespace, "scheme_name": scheme_name},
+                )
             )
-        ).fetchone()
+            .mappings()
+            .fetchone()
+        )
         existing = decrypt_auth_context(existing_row["auth_context"]) if existing_row else None
         merged = {**(existing or {}), **(body.auth_context or {})}
         await conn.execute(
             upsert_namespace_auth,
-            (namespace, scheme_name, encrypt_auth_context(merged) if merged else None),
+            {
+                "namespace": namespace,
+                "scheme_name": scheme_name,
+                "auth_context": encrypt_auth_context(merged) if merged else None,
+            },
         )
         return SchemeRecord(
             scheme_name=scheme_name,
@@ -90,5 +104,5 @@ async def clear_namespace_auth(
     async with get_conn() as conn:
         await conn.execute(
             delete_namespace_auth,
-            (namespace, scheme_name),
+            {"namespace": namespace, "scheme_name": scheme_name},
         )

@@ -81,3 +81,19 @@ TOKEN_KEY_CLIENT_SECRET = "client_secret"
 TOKEN_KEY_SCOPES = "scopes"
 TOKEN_KEY_TOKEN_URL = "token_url"
 TOKEN_KEY_GRANT_TYPE = "grant_type"
+
+
+# ── JSONB deserialization ─────────────────────────────────────────────────
+
+
+def parse_jsonb(v: object) -> object:
+    """Parse JSONB values that SQLAlchemy Core returns as raw strings.
+
+    Use as a Pydantic ``field_validator(mode="before")`` on dict/list fields
+    mapped to PostgreSQL JSONB columns.
+    """
+    if isinstance(v, str) and v and v[0] in ("{", "["):
+        import json
+
+        return json.loads(v)
+    return v

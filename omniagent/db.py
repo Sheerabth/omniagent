@@ -1,39 +1,42 @@
-"""Postgres connection pool (psycopg async)."""
+"""Database connection — SQLAlchemy Core async engine.
 
-from collections.abc import AsyncGenerator
+ponytail: single engine, pool_size=10, max_overflow=5.
+Tune via OMNIAGENT_POOL_SIZE / OMNIAGENT_MAX_OVERFLOW env vars if needed.
+"""
+
+from __future__ import annotations
+
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any, cast
 
-import psycopg
-from psycopg.rows import dict_row
-from psycopg_pool import AsyncConnectionPool
+from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
 
-_pool: AsyncConnectionPool | None = None
-
-# DictRow connection — conn.row_factory = dict_row is set in get_conn() below.
-# psycopg's type stubs default to AsyncConnection[TupleRow], but dict_row makes
-# every row a dict[str, Any]. Cast at yield so pyright treats fetchone/fetchall
-# results as DictRow throughout the codebase.
-DictConn = psycopg.AsyncConnection[dict[str, Any]]
+_engine = None
 
 
-async def init_pool() -> None:
-    global _pool
-    from omniagent.config import settings
+async def init_db(dsn: str) -> None:
+    """Create the async engine. Called once at startup."""
+    global _engine
+    _engine = create_async_engine(
+        dsn.replace("postgresql://", "postgresql+psycopg://"),
+        pool_size=10,
+        max_overflow=5,
+        isolation_level="AUTOCOMMIT",
+    )
 
-    dsn = settings.database_url
-    _pool = AsyncConnectionPool(dsn, min_size=2, max_size=10, open=False)
-    await _pool.open()
 
-
-async def close_pool() -> None:
-    if _pool:
-        await _pool.close()
+async def close_db() -> None:
+    """Dispose the engine. Called at shutdown."""
+    global _engine
+    if _engine is not None:
+        await _engine.dispose()
+        _engine = None
 
 
 @asynccontextmanager
-async def get_conn() -> AsyncGenerator[DictConn, None]:
-    assert _pool is not None, "DB pool not initialised"
-    async with _pool.connection() as conn:
-        conn.row_factory = dict_row  # pyright: ignore[reportAttributeAccessIssue]
-        yield cast(DictConn, conn)
+async def get_conn() -> AsyncIterator[AsyncConnection]:
+    """Yield a SQLAlchemy AsyncConnection from the engine pool."""
+    if _engine is None:
+        raise RuntimeError("Database not initialised — call init_db first")
+    async with _engine.connect() as conn:
+        yield conn

@@ -6,9 +6,9 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
-from omniagent.constants import NotifyType
+from omniagent.constants import NotifyType, parse_jsonb
 
 # ── Tools ──────────────────────────────────────────────────────────────────
 
@@ -24,6 +24,10 @@ class ToolRecord(BaseModel):
     openapi_base_url: str
     openapi_security: dict | None = None
     timeout: int | None = None
+
+    _parse_input_schema = field_validator("input_schema", mode="before")(parse_jsonb)
+    _parse_output_schema = field_validator("output_schema", mode="before")(parse_jsonb)
+    _parse_openapi_security = field_validator("openapi_security", mode="before")(parse_jsonb)
 
 
 # ── Toolboxes ──────────────────────────────────────────────────────────────
@@ -88,6 +92,8 @@ class AgentRecord(BaseModel):
     created_at: datetime
     updated_at: datetime
 
+    _parse_toolbox_refs = field_validator("toolbox_refs", mode="before")(parse_jsonb)
+
 
 # ── Sessions ───────────────────────────────────────────────────────────────
 
@@ -107,6 +113,8 @@ class SessionRecord(BaseModel):
     schedule_id: uuid.UUID | None = None
     is_scheduled: bool = False
     created_at: datetime
+
+    _parse_toolbox_versions = field_validator("toolbox_versions", mode="before")(parse_jsonb)
 
 
 class RunRequest(BaseModel):
@@ -133,6 +141,8 @@ class ToolCallEntry(BaseModel):
     success: bool
     error: str | None = None
 
+    _parse_input = field_validator("input", mode="before")(parse_jsonb)
+
 
 class SessionStatus(BaseModel):
     status: str
@@ -143,6 +153,8 @@ class SessionStatus(BaseModel):
     agent_version: str
     toolbox_versions: dict[str, str]
     tool_refs: list[str] = []
+
+    _parse_toolbox_versions = field_validator("toolbox_versions", mode="before")(parse_jsonb)
 
 
 # ── Settings ───────────────────────────────────────────────────────────────

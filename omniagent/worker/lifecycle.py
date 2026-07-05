@@ -16,12 +16,14 @@ from omniagent.worker.events import _emit_event
 from omniagent.worker.models import BaseEvent
 from omniagent.worker.native import DeferInfo
 from omniagent.worker.queries import (
-    build_update_session_complete,
-    build_update_session_deferred_for_cancel,
-    build_update_session_insert_cancel_marker,
-    pg_notify,
-    select_session_messages,
-    select_session_msg_count_and_cancel,
+    lock_session_with_msg_count,
+    select_pg_notify,
+    session_messages_by_id,
+    update_session_append_messages,
+    update_session_append_messages_clear_trace,
+    update_session_cancel,
+    update_session_cancel_clear_trace,
+    update_session_deferred,
 )
 
 logger = logging.getLogger(__name__)
@@ -52,11 +54,11 @@ async def _complete_session(session_id: str, result: str, prior_count: int) -> N
     async with get_conn() as conn:
         # ponytail: jsonb_array_length avoids transferring full messages array.
         # FOR UPDATE still required for cancel_requested atomicity.
-        rows = await conn.execute(
-            select_session_msg_count_and_cancel,  # pyright: ignore[reportArgumentType]
-            (session_id,),
+        result_rows = await conn.execute(
+            lock_session_with_msg_count,
+            {"session_id": session_id},
         )
-        sess = await rows.fetchone()
+        sess = result_rows.mappings().fetchone()
         if not sess:
             return
         has_queued_input = (sess["msg_count"] or 0) > prior_count
@@ -67,12 +69,17 @@ async def _complete_session(session_id: str, result: str, prior_count: int) -> N
                 MessageRecord(role="user", content=_CANCEL_MARKER, timestamp=now).model_dump()
             )
             next_status = SessionStatus.PENDING if has_queued_input else SessionStatus.CANCELLED
-            clear_trace = "" if has_queued_input else ", langfuse_trace_id = NULL"
+            cancel_q = (
+                update_session_cancel_clear_trace if not has_queued_input else update_session_cancel
+            )
             await conn.execute(
-                build_update_session_insert_cancel_marker(
-                    clear_trace
-                ),  # pyright: ignore[reportArgumentType]
-                (next_status, f"{{{prior_count}}}", f"[{marker_json}]", session_id),
+                cancel_q,
+                {
+                    "status": next_status,
+                    "path": f"{{{prior_count}}}",
+                    "marker": f"[{marker_json}]",
+                    "session_id": session_id,
+                },
             )
             # Always 'cancelled' here — the first turn is stopped, full stop.
             # If there's queued input, the follow-up turn's own lifecycle
@@ -80,18 +87,32 @@ async def _complete_session(session_id: str, result: str, prior_count: int) -> N
             # This gives the client a clean gap between "stopping" (first
             # message done) and "stop" (second message starting), so the user
             # can stop the second message independently.
-            await conn.execute(pg_notify, (ch, NotifyType.CANCELLED))
+            await conn.execute(
+                select_pg_notify,
+                {"channel": ch, "payload": NotifyType.CANCELLED},
+            )
         else:
             assistant_json = json.dumps(
                 MessageRecord(role="assistant", content=result, timestamp=now).model_dump()
             )
             next_status = SessionStatus.PENDING if has_queued_input else SessionStatus.IDLE
-            clear_trace = "" if has_queued_input else ", langfuse_trace_id = NULL"
-            await conn.execute(
-                build_update_session_complete(clear_trace),  # pyright: ignore[reportArgumentType]
-                (next_status, f"[{assistant_json}]", session_id),
+            append_q = (
+                update_session_append_messages_clear_trace
+                if not has_queued_input
+                else update_session_append_messages
             )
-            await conn.execute(pg_notify, (ch, NotifyType.COMPLETE))
+            await conn.execute(
+                append_q,
+                {
+                    "status": next_status,
+                    "messages": f"[{assistant_json}]",
+                    "session_id": session_id,
+                },
+            )
+            await conn.execute(
+                select_pg_notify,
+                {"channel": ch, "payload": NotifyType.COMPLETE},
+            )
 
     if has_queued_input:
         from omniagent.config import settings
@@ -127,11 +148,11 @@ async def _handle_defer(
     cancelled_with_queued_input = False
 
     async with get_conn() as conn:
-        rows = await conn.execute(
-            select_session_msg_count_and_cancel,  # pyright: ignore[reportArgumentType]
-            (session_id,),
+        result_rows = await conn.execute(
+            lock_session_with_msg_count,
+            {"session_id": session_id},
         )
-        sess = await rows.fetchone()
+        sess = result_rows.mappings().fetchone()
         if not sess:
             return
         cancelled = sess["cancel_requested"]
@@ -145,22 +166,29 @@ async def _handle_defer(
             next_status = (
                 SessionStatus.PENDING if cancelled_with_queued_input else SessionStatus.CANCELLED
             )
-            clear_trace = "" if cancelled_with_queued_input else ", langfuse_trace_id = NULL"
+            cancel_q = (
+                update_session_cancel_clear_trace
+                if not cancelled_with_queued_input
+                else update_session_cancel
+            )
             await conn.execute(
-                build_update_session_insert_cancel_marker(
-                    clear_trace
-                ),  # pyright: ignore[reportArgumentType]
-                (next_status, f"{{{prior_count}}}", f"[{marker_json}]", session_id),
+                cancel_q,
+                {
+                    "status": next_status,
+                    "path": f"{{{prior_count}}}",
+                    "marker": f"[{marker_json}]",
+                    "session_id": session_id,
+                },
             )
         else:
             # ponytail: defer non-cancel path does complex splicing (truncate +
             # append assistant + extend queued + append resume marker). Rare —
             # only when agent calls defer_turn. Full array transfer is fine.
-            rows = await conn.execute(
-                select_session_messages,  # pyright: ignore[reportArgumentType]
-                (session_id,),
+            result_rows = await conn.execute(
+                session_messages_by_id,
+                {"session_id": session_id},
             )
-            sess2 = await rows.fetchone()
+            sess2 = result_rows.mappings().fetchone()
             if not sess2:
                 return
             current_messages = sess2["messages"] or []
@@ -178,8 +206,13 @@ async def _handle_defer(
                 ).model_dump()
             )
             await conn.execute(
-                build_update_session_deferred_for_cancel(),  # pyright: ignore[reportArgumentType]
-                (json.dumps(new_messages), "{}", session_id),
+                update_session_deferred,
+                {
+                    "status": SessionStatus.DEFERRED,
+                    "messages": json.dumps(new_messages),
+                    "deferred_payload": "{}",
+                    "session_id": session_id,
+                },
             )
 
     if cancelled:
@@ -187,7 +220,10 @@ async def _handle_defer(
         async with get_conn() as conn:
             # Same as _complete_session — always 'cancelled'. If there's
             # queued input the follow-up's own lifecycle fires 'running'.
-            await conn.execute(pg_notify, (ch, NotifyType.CANCELLED))
+            await conn.execute(
+                select_pg_notify,
+                {"channel": ch, "payload": NotifyType.CANCELLED},
+            )
         if cancelled_with_queued_input:
             from omniagent.config import settings
             from omniagent.worker.job import run_agent_job  # lazy, avoids circular import

@@ -36,8 +36,8 @@ async def stream_session(
     session_id: uuid.UUID, _=Depends(require_scope("sessions:read"))
 ) -> EventSourceResponse:
     async with get_conn() as conn:
-        rows = await conn.execute(select_session_for_update, (session_id,))
-        sess = await rows.fetchone()
+        rows = await conn.execute(select_session_for_update, {"id": session_id})
+        sess = rows.fetchone()
     if not sess:
         raise HTTPException(404)
 
@@ -48,8 +48,8 @@ async def stream_session(
         queue = await sse_hub.subscribe(channel)
         try:
             async with get_conn() as conn:
-                rows = await conn.execute(select_session_status, (session_id,))
-                current = await rows.fetchone()
+                rows = await conn.execute(select_session_status, {"id": session_id})
+                current = rows.mappings().fetchone()
 
             if current and current["status"] in RESTING:
                 ntype = (
@@ -85,8 +85,8 @@ async def stream_session(
                         break
 
                 async with get_conn() as conn:
-                    rows = await conn.execute(select_session_status, (session_id,))
-                    current = await rows.fetchone()
+                    rows = await conn.execute(select_session_status, {"id": session_id})
+                    current = rows.mappings().fetchone()
                 if not current:
                     return
 

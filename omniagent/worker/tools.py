@@ -27,15 +27,15 @@ from omniagent.worker.http import _get_http_client
 from omniagent.worker.models import EventEmitter, ToolCallEvent, ToolResultEvent, ToolSnapshot
 from omniagent.worker.native import NATIVE_TOOL_DESCRIPTIONS, DeferInfo
 from omniagent.worker.queries import (
-    cancel_sessions_for_schedule,
-    delete_agent_memory,
-    delete_schedule_by_id_and_agent,
+    cancel_pending_sessions_by_schedule,
+    delete_memory,
+    delete_schedule,
     insert_schedule,
-    select_memory_by_key,
-    select_memory_keys_by_agent,
-    select_schedule_by_id_and_agent,
+    select_memory_keys,
+    select_memory_value,
+    select_schedule_by_id_agent,
     select_schedules_by_agent,
-    update_schedule_by_id_and_agent,
+    update_schedule_by_id_agent,
     upsert_agent_memory,
 )
 
@@ -225,23 +225,23 @@ class NativeToolExecutor:
             ),
         )
         async with get_conn() as conn:
-            rows = await conn.execute(
-                select_memory_by_key,  # pyright: ignore[reportArgumentType]
-                (self._ctx.agent_name, input_data["key"]),
+            result = await conn.execute(
+                select_memory_value,
+                {"agent_name": self._ctx.agent_name, "key": input_data["key"]},
             )
-            row = await rows.fetchone()
-            result = row["value"] if row else None
+            row = result.mappings().fetchone()
+            value = row["value"] if row else None
         await self._emit(
             ToolResultEvent(
                 tool="native.memory_get",
                 success=True,
                 input=input_data,
-                output=result,
+                output=value,
                 harness=self._ctx.harness,
                 skill_name=_SKILL_NAME,
             ),
         )
-        return result
+        return value
 
     async def _memory_set(self, input_data: dict[str, Any]) -> dict[str, Any]:
         await self._emit(
@@ -254,8 +254,12 @@ class NativeToolExecutor:
         )
         async with get_conn() as conn:
             await conn.execute(
-                upsert_agent_memory,  # pyright: ignore[reportArgumentType]
-                (self._ctx.agent_name, input_data["key"], json.dumps(input_data["value"])),
+                upsert_agent_memory,
+                {
+                    "agent_name": self._ctx.agent_name,
+                    "key": input_data["key"],
+                    "value": json.dumps(input_data["value"]),
+                },
             )
             result = {"ok": True}
         await self._emit(
@@ -281,8 +285,8 @@ class NativeToolExecutor:
         )
         async with get_conn() as conn:
             await conn.execute(
-                delete_agent_memory,  # pyright: ignore[reportArgumentType]
-                (self._ctx.agent_name, input_data["key"]),
+                delete_memory,
+                {"agent_name": self._ctx.agent_name, "key": input_data["key"]},
             )
             result = {"ok": True}
         await self._emit(
@@ -307,22 +311,22 @@ class NativeToolExecutor:
             ),
         )
         async with get_conn() as conn:
-            rows = await conn.execute(
-                select_memory_keys_by_agent,  # pyright: ignore[reportArgumentType]
-                (self._ctx.agent_name,),
+            result = await conn.execute(
+                select_memory_keys,
+                {"agent_name": self._ctx.agent_name},
             )
-            result = {"keys": [r["key"] for r in await rows.fetchall()]}
+            keys = [r["key"] for r in result.mappings().fetchall()]
         await self._emit(
             ToolResultEvent(
                 tool="native.memory_list",
                 success=True,
                 input=input_data,
-                output=result,
+                output={"keys": keys},
                 harness=self._ctx.harness,
                 skill_name=_SKILL_NAME,
             ),
         )
-        return result
+        return {"keys": keys}
 
     # ── Schedule tools ────────────────────────────────────────────────────
 
@@ -336,14 +340,16 @@ class NativeToolExecutor:
             ),
         )
         async with get_conn() as conn:
-            rows = await conn.execute(
-                select_schedules_by_agent,  # pyright: ignore[reportArgumentType]
-                (self._ctx.agent_name,),
+            result = await conn.execute(
+                select_schedules_by_agent,
+                {"agent_name": self._ctx.agent_name},
             )
             from omniagent.api.models import ScheduleRecord
 
-            schedules = [ScheduleRecord.model_validate(dict(r)) for r in await rows.fetchall()]
-            result: list[dict[str, Any]] = [
+            schedule_records = [
+                ScheduleRecord.model_validate(dict(r)) for r in result.mappings().fetchall()
+            ]
+            schedule_list: list[dict[str, Any]] = [
                 {
                     "schedule_id": str(s.id),
                     "cron_expr": s.cron_expr,
@@ -351,19 +357,19 @@ class NativeToolExecutor:
                     "enabled": s.enabled,
                     "next_run_at": s.next_run_at.isoformat() if s.next_run_at else None,
                 }
-                for s in schedules
+                for s in schedule_records
             ]
         await self._emit(
             ToolResultEvent(
                 tool="native.schedule_list",
                 success=True,
                 input=input_data,
-                output=result,
+                output=schedule_list,
                 harness=self._ctx.harness,
                 skill_name=_SKILL_NAME,
             ),
         )
-        return result
+        return schedule_list
 
     async def _schedule_create(self, input_data: dict[str, Any]) -> dict[str, Any]:
         from croniter import croniter as _croniter
@@ -385,25 +391,30 @@ class NativeToolExecutor:
             ),
         )
         async with get_conn() as conn:
-            rows = await conn.execute(
-                insert_schedule,  # pyright: ignore[reportArgumentType]
-                (self._ctx.agent_name, cron_expr, prompt, next_run),
+            result = await conn.execute(
+                insert_schedule,
+                {
+                    "agent_name": self._ctx.agent_name,
+                    "cron_expr": cron_expr,
+                    "prompt": prompt,
+                    "next_run_at": next_run,
+                },
             )
-            schedule_row = await rows.fetchone()
+            schedule_row = result.mappings().fetchone()
             assert schedule_row is not None, "INSERT RETURNING returned no row"
             schedule_id = str(schedule_row["id"])
-        result = {"schedule_id": schedule_id, "next_run_at": next_run.isoformat()}
+        result_dict = {"schedule_id": schedule_id, "next_run_at": next_run.isoformat()}
         await self._emit(
             ToolResultEvent(
                 tool="native.schedule_create",
                 success=True,
                 input=input_data,
-                output=result,
+                output=result_dict,
                 harness=self._ctx.harness,
                 skill_name=_SKILL_NAME,
             ),
         )
-        return result
+        return result_dict
 
     async def _schedule_update(self, input_data: dict[str, Any]) -> dict[str, Any]:
         from croniter import croniter as _croniter
@@ -421,12 +432,11 @@ class NativeToolExecutor:
             ),
         )
         async with get_conn() as conn:
-            row = await (
-                await conn.execute(
-                    select_schedule_by_id_and_agent,  # pyright: ignore[reportArgumentType]
-                    (schedule_id, self._ctx.agent_name),
-                )
-            ).fetchone()
+            result = await conn.execute(
+                select_schedule_by_id_agent,
+                {"schedule_id": schedule_id, "agent_name": self._ctx.agent_name},
+            )
+            row = result.mappings().fetchone()
             if not row:
                 raise RuntimeError(f"schedule {schedule_id!r} not found")
             new_cron = cron_expr or row["cron_expr"]
@@ -437,10 +447,16 @@ class NativeToolExecutor:
             except Exception as exc:
                 raise RuntimeError(f"invalid cron_expr {new_cron!r}: {exc}") from exc
             await conn.execute(
-                update_schedule_by_id_and_agent,  # pyright: ignore[reportArgumentType]
-                (new_cron, new_prompt, next_run, schedule_id, self._ctx.agent_name),
+                update_schedule_by_id_agent,
+                {
+                    "schedule_id": schedule_id,
+                    "agent_name": self._ctx.agent_name,
+                    "cron_expr": new_cron,
+                    "prompt": new_prompt,
+                    "next_run_at": next_run,
+                },
             )
-        result = {
+        result_dict = {
             "schedule_id": schedule_id,
             "cron_expr": new_cron,
             "next_run_at": next_run.isoformat(),
@@ -450,12 +466,12 @@ class NativeToolExecutor:
                 tool="native.schedule_update",
                 success=True,
                 input=input_data,
-                output=result,
+                output=result_dict,
                 harness=self._ctx.harness,
                 skill_name=_SKILL_NAME,
             ),
         )
-        return result
+        return result_dict
 
     async def _schedule_delete(self, input_data: dict[str, Any]) -> dict[str, Any]:
         schedule_id = input_data.get("schedule_id")
@@ -467,29 +483,29 @@ class NativeToolExecutor:
                 skill_name=_SKILL_NAME,
             ),
         )
-        async with get_conn() as conn, conn.transaction():
+        async with get_conn() as conn, conn.begin():
             await conn.execute(
-                cancel_sessions_for_schedule,  # pyright: ignore[reportArgumentType]
-                (schedule_id,),
+                cancel_pending_sessions_by_schedule,
+                {"schedule_id": schedule_id},
             )
             res = await conn.execute(
-                delete_schedule_by_id_and_agent,  # pyright: ignore[reportArgumentType]
-                (schedule_id, self._ctx.agent_name),
+                delete_schedule,
+                {"schedule_id": schedule_id, "agent_name": self._ctx.agent_name},
             )
             if res.rowcount == 0:
                 raise RuntimeError(f"schedule {schedule_id!r} not found")
-        result = {"schedule_id": schedule_id, "deleted": True}
+        result_dict = {"schedule_id": schedule_id, "deleted": True}
         await self._emit(
             ToolResultEvent(
                 tool="native.schedule_delete",
                 success=True,
                 input=input_data,
-                output=result,
+                output=result_dict,
                 harness=self._ctx.harness,
                 skill_name=_SKILL_NAME,
             ),
         )
-        return result
+        return result_dict
 
     # ── Defer tools ───────────────────────────────────────────────────────
 

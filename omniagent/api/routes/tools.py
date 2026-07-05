@@ -46,22 +46,24 @@ async def import_openapi(
     if not tools:
         raise HTTPException(422, detail="No operations found in spec")
 
-    async with get_conn() as conn, conn.transaction():
+    async with get_conn() as conn, conn.begin():
         for t in tools:
             await conn.execute(
                 upsert_tool,
-                (
-                    t.name,
-                    body.namespace,
-                    t.description,
-                    json.dumps(t.input_schema),
-                    json.dumps(t.output_schema),
-                    t.openapi_method,
-                    t.openapi_path,
-                    t.openapi_base_url,
-                    json.dumps(t.openapi_security) if t.openapi_security else None,
-                    None,
-                ),
+                {
+                    "name": t.name,
+                    "namespace": body.namespace,
+                    "description": t.description,
+                    "input_schema": json.dumps(t.input_schema),
+                    "output_schema": json.dumps(t.output_schema),
+                    "openapi_method": t.openapi_method,
+                    "openapi_path": t.openapi_path,
+                    "openapi_base_url": t.openapi_base_url,
+                    "openapi_security": (
+                        json.dumps(t.openapi_security) if t.openapi_security else None
+                    ),
+                    "timeout": None,
+                },
             )
 
     return {"imported": len(tools), "tools": [t.name for t in tools]}
@@ -76,7 +78,7 @@ async def patch_tool(
     name: str, body: PatchToolRequest, _=Depends(require_scope("tools:write"))
 ) -> dict:
     async with get_conn() as conn:
-        result = await conn.execute(update_tool_timeout, (body.timeout, name))
+        result = await conn.execute(update_tool_timeout, {"timeout": body.timeout, "name": name})
         if result.rowcount == 0:
             raise HTTPException(404, detail=f"Tool {name!r} not found")
     return {"name": name, "timeout": body.timeout}
@@ -85,7 +87,7 @@ async def patch_tool(
 @router.delete("/{name}", status_code=204)
 async def delete_tool(name: str, _=Depends(require_scope("tools:write"))) -> None:
     async with get_conn() as conn:
-        result = await conn.execute(delete_tool_by_name, (name,))
+        result = await conn.execute(delete_tool_by_name, {"name": name})
         if result.rowcount == 0:
             raise HTTPException(404, detail=f"Tool {name!r} not found")
 
@@ -93,14 +95,14 @@ async def delete_tool(name: str, _=Depends(require_scope("tools:write"))) -> Non
 @router.delete("/namespace/{namespace}", status_code=204)
 async def delete_namespace(namespace: str, _=Depends(require_scope("tools:write"))) -> None:
     async with get_conn() as conn:
-        await conn.execute(delete_tools_by_namespace, (namespace,))
+        await conn.execute(delete_tools_by_namespace, {"namespace": namespace})
 
 
 @router.get("", response_model=list[ToolRecord])
 async def list_tools(_=Depends(require_scope("tools:read"))) -> list[ToolRecord]:
     async with get_conn() as conn:
         rows = await conn.execute(select_all_tools)
-        return [ToolRecord.model_validate(dict(r)) for r in await rows.fetchall()]
+        return [ToolRecord.model_validate(dict(r)) for r in rows.mappings().fetchall()]
 
 
 @router.get("/{namespace}", response_model=list[ToolRecord])
@@ -108,8 +110,5 @@ async def list_tools_by_namespace(
     namespace: str, _=Depends(require_scope("tools:read"))
 ) -> list[ToolRecord]:
     async with get_conn() as conn:
-        rows = await conn.execute(
-            select_tools_by_namespace,
-            (namespace,),
-        )
-        return [ToolRecord.model_validate(dict(r)) for r in await rows.fetchall()]
+        rows = await conn.execute(select_tools_by_namespace, {"namespace": namespace})
+        return [ToolRecord.model_validate(dict(r)) for r in rows.mappings().fetchall()]

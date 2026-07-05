@@ -11,10 +11,10 @@ from omniagent.config import settings
 from omniagent.worker.job import app
 from omniagent.worker.queries import (
     insert_session_from_schedule,
-    select_agent_latest_by_name,
-    select_schedule_active_session,
-    select_schedules_due,
-    update_schedule_fired,
+    select_active_session_by_schedule,
+    select_agent_by_name_latest,
+    select_due_schedules,
+    update_schedule_after_fire,
 )
 
 logger = logging.getLogger(__name__)
@@ -38,10 +38,14 @@ async def check_schedules(timestamp: int) -> None:
     from omniagent.db import get_conn
 
     async with get_conn() as conn:
-        rows = await conn.execute(select_schedules_due)
-        schedules = [_ScheduleRow.model_validate(dict(r)) for r in await rows.fetchall()]
+        result = await conn.execute(
+            select_due_schedules,
+        )
+        schedules_rows = [
+            _ScheduleRow.model_validate(dict(r)) for r in result.mappings().fetchall()
+        ]
 
-    for sched in schedules:
+    for sched in schedules_rows:
         try:
             await _fire_schedule(sched)
 
@@ -51,8 +55,8 @@ async def check_schedules(timestamp: int) -> None:
 
             async with get_conn() as conn:
                 await conn.execute(
-                    update_schedule_fired,  # pyright: ignore[reportArgumentType]
-                    (next_run, sched.id),
+                    update_schedule_after_fire,
+                    {"schedule_id": sched.id, "next_run_at": next_run},
                 )
             logger.info("schedule %s fired, next=%s", sched.id, next_run.isoformat())
         except Exception:
@@ -63,20 +67,19 @@ async def _fire_schedule(sched: _ScheduleRow) -> None:
     from omniagent.db import get_conn
 
     async with get_conn() as conn:
-        rows = await conn.execute(
-            select_agent_latest_by_name,  # pyright: ignore[reportArgumentType]
-            (sched.agent_name,),
+        result = await conn.execute(
+            select_agent_by_name_latest,
+            {"name": sched.agent_name},
         )
-        agent = await rows.fetchone()
+        agent = result.mappings().fetchone()
         if not agent:
             raise RuntimeError(f"agent not found: {sched.agent_name}")
 
-        active = await (
-            await conn.execute(
-                select_schedule_active_session,  # pyright: ignore[reportArgumentType]
-                (sched.id,),
-            )
-        ).fetchone()
+        result = await conn.execute(
+            select_active_session_by_schedule,
+            {"schedule_id": sched.id},
+        )
+        active = result.fetchone()
         if active:
             logger.info("schedule %s: previous run still active, skipping", sched.id)
             return
@@ -84,18 +87,18 @@ async def _fire_schedule(sched: _ScheduleRow) -> None:
         now = datetime.now(UTC).isoformat()
         messages = [{"role": "user", "content": sched.prompt, "timestamp": now}]
 
-        rows = await conn.execute(
-            insert_session_from_schedule,  # pyright: ignore[reportArgumentType]
-            (
-                agent["name"],
-                agent["version"],
-                json.dumps(agent["toolbox_refs"] or {}),
-                agent["tool_refs"] or [],
-                json.dumps(messages),
-                sched.id,
-            ),
+        result = await conn.execute(
+            insert_session_from_schedule,
+            {
+                "agent_name": agent["name"],
+                "agent_version": agent["version"],
+                "toolbox_versions": json.dumps(agent["toolbox_refs"] or {}),
+                "tool_refs": agent["tool_refs"] or [],
+                "messages": json.dumps(messages),
+                "schedule_id": sched.id,
+            },
         )
-        session_row = await rows.fetchone()
+        session_row = result.mappings().fetchone()
         assert session_row is not None, "INSERT RETURNING returned no row"
         session_id = str(session_row["id"])
 

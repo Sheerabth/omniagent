@@ -16,7 +16,7 @@ from typing import Protocol
 from fastapi import HTTPException, Request, Security
 from fastapi.security import APIKeyHeader
 
-from omniagent.api.queries import select_key_hash_and_scopes_by_prefix
+from omniagent.api.queries import select_key_by_prefix
 from omniagent.api.secrets import verify_key
 from omniagent.constants import X_OMNIAGENT_KEY
 from omniagent.db import get_conn
@@ -31,8 +31,11 @@ _header_scheme = APIKeyHeader(name=X_OMNIAGENT_KEY, auto_error=False)
 async def _resolve_key(key: str) -> list[str]:
     prefix = key[:8]
     async with get_conn() as conn:
-        rows = await conn.execute(select_key_hash_and_scopes_by_prefix, (prefix,))
-        for row in await rows.fetchall():
+        rows = await conn.execute(
+            select_key_by_prefix,
+            {"prefix": prefix},
+        )
+        for row in rows.mappings().fetchall():
             if verify_key(key, row["key_hash"]):
                 return list(row["scopes"] or [ADMIN_SCOPE])
 

@@ -16,9 +16,9 @@ from omniagent.api.models import (
 from omniagent.api.models import SessionStatus as SessionStatusResponse
 from omniagent.api.models import ToolCallEntry
 from omniagent.api.queries import (
-    build_update_session_status_pending_returning,
     delete_session_by_id,
     insert_session,
+    pg_notify,
     select_agent_by_name_version,
     select_agent_latest,
     select_session_for_update,
@@ -26,6 +26,7 @@ from omniagent.api.queries import (
     select_sessions_recent,
     update_session_cancel_requested,
     update_session_messages_append,
+    update_session_status_pending_returning,
 )
 from omniagent.config import settings
 from omniagent.constants import NotifyType, SessionStatus, session_channel
@@ -42,14 +43,14 @@ async def create_session(
         if body.agent_version:
             rows = await conn.execute(
                 select_agent_by_name_version,
-                (body.agent_name, body.agent_version),
+                {"name": body.agent_name, "version": body.agent_version},
             )
         else:
             rows = await conn.execute(
                 select_agent_latest,
-                (body.agent_name,),
+                {"name": body.agent_name},
             )
-        agent = await rows.fetchone()
+        agent = rows.mappings().fetchone()
         if not agent:
             raise HTTPException(404, detail="Agent not found")
 
@@ -58,11 +59,16 @@ async def create_session(
 
         rows = await conn.execute(
             insert_session,
-            (body.agent_name, agent["version"], json.dumps(toolbox_versions), tool_refs),
+            {
+                "agent_name": body.agent_name,
+                "agent_version": agent["version"],
+                "toolbox_versions": json.dumps(toolbox_versions),
+                "tool_refs": tool_refs,
+            },
         )
-        row = await rows.fetchone()
+        row = rows.mappings().fetchone()
         assert row is not None
-        return SessionRecord.model_validate(row)
+        return SessionRecord.model_validate(dict(row))
 
 
 @router.post("/{session_id}/run", status_code=202)
@@ -83,8 +89,8 @@ async def run_session(
 
     async with get_conn() as conn:
         # Row lock so a concurrent /run can't race the busy-check below.
-        rows = await conn.execute(select_session_for_update, (session_id,))
-        session = await rows.fetchone()
+        rows = await conn.execute(select_session_for_update, {"id": session_id})
+        session = rows.mappings().fetchone()
         if not session:
             raise HTTPException(404)
 
@@ -96,7 +102,11 @@ async def run_session(
         new_status = SessionStatus.PENDING if was_idle else session["status"]
         await conn.execute(
             update_session_messages_append,
-            (json.dumps([new_message]), new_status, session_id),
+            {
+                "msg": json.dumps([new_message]),
+                "status": new_status,
+                "id": session_id,
+            },
         )
 
         if was_idle:
@@ -115,8 +125,8 @@ async def resume_session(
 ) -> JSONResponse:
     """Inject a tool result into a deferred session and schedule the next turn."""
     async with get_conn() as conn:
-        rows = await conn.execute(select_session_full, (session_id,))
-        session = await rows.fetchone()
+        rows = await conn.execute(select_session_full, {"id": session_id})
+        session = rows.mappings().fetchone()
         if not session:
             raise HTTPException(404)
         if session["status"] != SessionStatus.DEFERRED:
@@ -133,12 +143,15 @@ async def resume_session(
         )
 
         rows = await conn.execute(
-            build_update_session_status_pending_returning(
-                SessionStatus.DEFERRED
-            ),  # pyright: ignore[reportArgumentType]
-            (json.dumps(messages), session_id),
+            update_session_status_pending_returning,
+            {
+                "status": SessionStatus.PENDING,
+                "messages": json.dumps(messages),
+                "id": session_id,
+                "where_status": SessionStatus.DEFERRED,
+            },
         )
-        if not await rows.fetchone():
+        if not rows.fetchone():
             raise HTTPException(409, detail="Session is not deferred")
 
         from omniagent.worker.job import run_agent_job
@@ -154,7 +167,7 @@ async def resume_session(
 async def list_sessions(_=Depends(require_scope("sessions:read"))) -> list[SessionRecord]:
     async with get_conn() as conn:
         rows = await conn.execute(select_sessions_recent)
-        return [SessionRecord.model_validate(dict(r)) for r in await rows.fetchall()]
+        return [SessionRecord.model_validate(dict(r)) for r in rows.mappings().fetchall()]
 
 
 @router.post("/{session_id}/cancel", status_code=204)
@@ -167,21 +180,24 @@ async def cancel_session(session_id: uuid.UUID, _=Depends(require_scope("session
     or straight into a follow-up turn if more was queued meanwhile) and
     writes status itself. See job.py:_complete_session / _handle_defer.
     """
-    from omniagent.api.queries import pg_notify
-
     ch = session_channel(session_id)
     async with get_conn() as conn:
         await conn.execute(
             update_session_cancel_requested,
-            (session_id, SessionStatus.RUNNING, SessionStatus.PENDING, SessionStatus.DEFERRED),
+            {
+                "id": session_id,
+                "s1": SessionStatus.RUNNING,
+                "s2": SessionStatus.PENDING,
+                "s3": SessionStatus.DEFERRED,
+            },
         )
-        await conn.execute(pg_notify, (ch, NotifyType.CANCELLING))
+        await conn.execute(pg_notify, {"channel": ch, "payload": NotifyType.CANCELLING})
 
 
 @router.delete("/{session_id}", status_code=204)
 async def delete_session(session_id: uuid.UUID, _=Depends(require_scope("sessions:write"))) -> None:
     async with get_conn() as conn:
-        await conn.execute(delete_session_by_id, (session_id,))
+        await conn.execute(delete_session_by_id, {"id": session_id})
 
 
 @router.get("/{session_id}/status", response_model=SessionStatusResponse)
@@ -189,8 +205,8 @@ async def get_session_status(
     session_id: uuid.UUID, _=Depends(require_scope("sessions:read"))
 ) -> SessionStatusResponse:
     async with get_conn() as conn:
-        rows = await conn.execute(select_session_full, (session_id,))
-        session = await rows.fetchone()
+        rows = await conn.execute(select_session_full, {"id": session_id})
+        session = rows.mappings().fetchone()
     if not session:
         raise HTTPException(404)
 

@@ -57,12 +57,11 @@ async def _get_oauth_token(security: dict, auth_context: dict) -> str:
     cache_key = f"{security.get(TOKEN_KEY_TOKEN_URL, '')}:{client_id}"
 
     async with get_conn() as conn:
-        row = await (
-            await conn.execute(
-                select_oauth_token_valid,  # pyright: ignore[reportArgumentType]
-                (cache_key,),
-            )
-        ).fetchone()
+        result = await conn.execute(
+            select_oauth_token_valid,
+            {"cache_key": cache_key},
+        )
+        row = result.mappings().fetchone()
         if row:
             return row["token"]
 
@@ -88,7 +87,11 @@ async def _get_oauth_token(security: dict, auth_context: dict) -> str:
     async with get_conn() as conn:
         await conn.execute(delete_expired_oauth_tokens)
         await conn.execute(
-            upsert_oauth_token,  # pyright: ignore[reportArgumentType]
-            (cache_key, token, expires_in - settings.token_expiry_buffer_seconds),
+            upsert_oauth_token,
+            {
+                "cache_key": cache_key,
+                "token": token,
+                "ttl": expires_in - settings.token_expiry_buffer_seconds,
+            },
         )
     return token

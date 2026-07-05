@@ -16,9 +16,6 @@ from omniagent.db import get_conn
 router = APIRouter(prefix="/settings", tags=["settings"])
 
 
-# ── API keys ────────────────────────────────────────────────────────────────
-
-
 @router.post("/api-keys", status_code=201, response_model=ApiKeyResponse)
 async def create_api_key(
     body: ApiKeyCreate, _=Depends(require_scope("keys:manage"))
@@ -32,9 +29,14 @@ async def create_api_key(
     async with get_conn() as conn:
         rows = await conn.execute(
             insert_api_key_returning,
-            (body.name, key_hash, key_prefix, body.scopes),
+            {
+                "name": body.name,
+                "key_hash": key_hash,
+                "key_prefix": key_prefix,
+                "scopes": body.scopes,
+            },
         )
-        row = await rows.fetchone()
+        row = rows.mappings().fetchone()
         assert row is not None, "INSERT RETURNING returned no row"
     return ApiKeyResponse(
         id=row["id"],
@@ -49,16 +51,16 @@ async def create_api_key(
 async def list_api_keys(_=Depends(require_scope("keys:manage"))) -> list[ApiKeyRecord]:
     async with get_conn() as conn:
         rows = await conn.execute(select_non_ui_api_keys)
-        return [ApiKeyRecord.model_validate(dict(r)) for r in await rows.fetchall()]
+        return [ApiKeyRecord.model_validate(dict(r)) for r in rows.mappings().fetchall()]
 
 
 @router.delete("/api-keys/{key_id}", status_code=204)
 async def delete_api_key(key_id: uuid.UUID, _=Depends(require_scope("keys:manage"))) -> None:
     async with get_conn() as conn:
-        row = await (await conn.execute(delete_api_key_returning, (key_id,))).fetchone()
+        row = (await conn.execute(delete_api_key_returning, {"id": key_id})).fetchone()
         if not row:
             # Distinguish 404 vs 403: check if it exists at all
-            exists = await (await conn.execute(select_api_key_by_id, (key_id,))).fetchone()
+            exists = (await conn.execute(select_api_key_by_id, {"id": key_id})).fetchone()
             if not exists:
                 raise HTTPException(404)
             raise HTTPException(403, detail="Cannot delete built-in UI key")

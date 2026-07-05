@@ -14,12 +14,11 @@ from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_
 from omniagent import db
 from omniagent.api import queue
 from omniagent.api.queries import (
-    build_select_stuck_sessions,
-    build_update_session_set_status_where_status,
     pg_notify,
     select_advisory_unlock,
-    select_one,
+    select_stuck_sessions,
     select_try_advisory_lock,
+    update_session_failed_where_running,
 )
 from omniagent.api.routes import (
     agents,
@@ -67,31 +66,28 @@ async def _mark_session_failed(session_id: str) -> None:
     sid = uuid.UUID(session_id)
     async with db.get_conn() as conn:
         await conn.execute(
-            build_update_session_set_status_where_status(  # pyright: ignore[reportArgumentType]
-                SessionStatus.FAILED, SessionStatus.RUNNING
-            ),
-            (sid,),
+            update_session_failed_where_running,
+            {"status": SessionStatus.FAILED, "id": sid, "where_status": SessionStatus.RUNNING},
         )
     ch = session_channel(sid)
     async with db.get_conn() as conn:
-        await conn.execute(pg_notify, (ch, NotifyType.ERROR))
+        await conn.execute(pg_notify, {"channel": ch, "payload": NotifyType.ERROR})
 
 
 async def _reconcile_stuck_sessions() -> None:
     async with db.get_conn() as conn:
         # Advisory lock prevents race when multiple CP instances start simultaneously
         locked = await conn.execute(select_try_advisory_lock)
-        lock_row = await locked.fetchone()
+        lock_row = locked.mappings().fetchone()
         if not lock_row or not lock_row["pg_try_advisory_lock"]:
             logger.info("reconcile: another instance holds lock, skipping")
             return
         try:
             rows = await conn.execute(
-                build_select_stuck_sessions(  # pyright: ignore[reportArgumentType, reportCallIssue]
-                    SessionStatus.RUNNING, SessionStatus.PENDING
-                ),
+                select_stuck_sessions,
+                {"s1": SessionStatus.RUNNING, "s2": SessionStatus.PENDING},
             )
-            stuck = await rows.fetchall()
+            stuck = rows.mappings().fetchall()
             for row in stuck:
                 logger.warning(
                     "reconcile: marking stuck session %s (was %s) as failed",
@@ -99,10 +95,12 @@ async def _reconcile_stuck_sessions() -> None:
                     row["status"],
                 )
                 await conn.execute(
-                    build_update_session_set_status_where_status(  # pyright: ignore[reportArgumentType]
-                        SessionStatus.FAILED, SessionStatus.RUNNING
-                    ),
-                    (row["id"],),
+                    update_session_failed_where_running,
+                    {
+                        "status": SessionStatus.FAILED,
+                        "id": row["id"],
+                        "where_status": SessionStatus.RUNNING,
+                    },
                 )
         finally:
             await conn.execute(select_advisory_unlock)
@@ -117,7 +115,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     dsn = settings.database_url
     await run_migrations(dsn)
-    await db.init_pool()
+    await db.init_db(dsn)
     await _reconcile_stuck_sessions()
     queue.set_session_fail_callback(_mark_session_failed)
     await sse_hub.start()
@@ -126,7 +124,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         yield
 
     await sse_hub.stop()
-    await db.close_pool()
+    await db.close_db()
 
 
 app = FastAPI(title="OmniAgent Control Plane", lifespan=lifespan)
@@ -163,7 +161,7 @@ async def metrics() -> Response:
 async def health() -> JSONResponse:
     try:
         async with db.get_conn() as conn:
-            await conn.execute(select_one)
+            await conn.execute(pg_notify, {"channel": "health", "payload": "check"})
         return JSONResponse({"status": "ok", "db": "ok"})
     except Exception as e:
         return JSONResponse({"status": "error", "db": str(e)}, status_code=503)

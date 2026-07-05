@@ -12,49 +12,49 @@ from omniagent.worker.models import (
 )
 from omniagent.worker.queries import (
     select_agent_by_name_version,
-    select_namespace_auth_by_namespaces,
-    select_session_config,
+    select_namespace_auth_by_namespace,
     select_toolbox_by_name_version,
     select_tools_by_names,
+    session_agent_by_id,
 )
 
 
 async def _fetch_session_config(session_id: str) -> SessionConfig:
     async with get_conn() as conn:
-        rows = await conn.execute(
-            select_session_config,  # pyright: ignore[reportArgumentType]
-            (session_id,),
+        result = await conn.execute(
+            session_agent_by_id,
+            {"session_id": session_id},
         )
-        session_row = await rows.fetchone()
+        session_row = result.mappings().fetchone()
         if not session_row:
             raise RuntimeError(f"session_not_found:{session_id}")
-        session = _SessionConfigRow.model_validate(dict(session_row))
+        session = _SessionConfigRow.model_validate(session_row)
 
-        rows = await conn.execute(
-            select_agent_by_name_version,  # pyright: ignore[reportArgumentType]
-            (session.agent_name, session.agent_version),
+        result = await conn.execute(
+            select_agent_by_name_version,
+            {"name": session.agent_name, "version": session.agent_version},
         )
-        agent_row = await rows.fetchone()
+        agent_row = result.mappings().fetchone()
         if not agent_row:
             raise RuntimeError(
                 f"agent_version_deleted:{session.agent_name}:{session.agent_version}"
             )
-        agent = AgentRecord.model_validate(dict(agent_row))
+        agent = AgentRecord.model_validate(agent_row)
 
         # Load toolboxes
-        toolboxes: list[ToolboxSnapshot] = []
+        toolboxes_list: list[ToolboxSnapshot] = []
         toolbox_tool_names: list[str] = []
         tool_to_toolbox: dict[str, str] = {}
         for tname, toolbox_version in session.toolbox_versions.items():
-            rows = await conn.execute(
-                select_toolbox_by_name_version,  # pyright: ignore[reportArgumentType]
-                (tname, toolbox_version),
+            result = await conn.execute(
+                select_toolbox_by_name_version,
+                {"name": tname, "version": toolbox_version},
             )
-            toolbox_row = await rows.fetchone()
+            toolbox_row = result.mappings().fetchone()
             if not toolbox_row:
                 raise RuntimeError(f"toolbox_version_deleted:{tname}:{toolbox_version}")
-            toolbox = ToolboxRecord.model_validate(dict(toolbox_row))
-            toolboxes.append(ToolboxSnapshot(system_prompt=toolbox.system_prompt or ""))
+            toolbox = ToolboxRecord.model_validate(toolbox_row)
+            toolboxes_list.append(ToolboxSnapshot(system_prompt=toolbox.system_prompt or ""))
             for t in toolbox.tool_names:
                 toolbox_tool_names.append(t)
                 tool_to_toolbox[t] = tname
@@ -63,11 +63,11 @@ async def _fetch_session_config(session_id: str) -> SessionConfig:
         all_tool_names = list(set(toolbox_tool_names + session.tool_refs))
         tool_rows: dict[str, ToolRecord] = {}
         if all_tool_names:
-            rows = await conn.execute(
-                select_tools_by_names,  # pyright: ignore[reportArgumentType]
-                (all_tool_names,),
+            result = await conn.execute(
+                select_tools_by_names,
+                {"names": all_tool_names},
             )
-            for row in await rows.fetchall():
+            for row in result.mappings().fetchall():
                 tool = ToolRecord.model_validate(dict(row))
                 tool_rows[tool.name] = tool
 
@@ -82,12 +82,12 @@ async def _fetch_session_config(session_id: str) -> SessionConfig:
         ns_auth: dict[tuple[str, str], object] = {}
         if ns_scheme_pairs:
             namespaces = list({p[0] for p in ns_scheme_pairs})
-            rows = await conn.execute(
-                select_namespace_auth_by_namespaces,  # pyright: ignore[reportArgumentType]
-                (namespaces,),
+            result = await conn.execute(
+                select_namespace_auth_by_namespace,
+                {"namespaces": namespaces},
             )
             ns_scheme_set = set(ns_scheme_pairs)
-            for row in await rows.fetchall():
+            for row in result.mappings().fetchall():
                 r = _NamespaceAuthRow.model_validate(dict(row))
                 pair = (r.namespace, r.scheme_name)
                 if pair in ns_scheme_set and r.auth_context is not None:
@@ -120,6 +120,6 @@ async def _fetch_session_config(session_id: str) -> SessionConfig:
         model=agent.model,
         system_prompt=agent.system_prompt,
         use_monty=agent.use_monty,
-        toolboxes=toolboxes,
+        toolboxes=toolboxes_list,
         tool_snapshot=tool_snapshot,
     )

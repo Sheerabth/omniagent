@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
-from omniagent.constants import EventType
+from omniagent.constants import EventType, parse_jsonb
 
 
 class ToolSnapshot(BaseModel):
@@ -105,6 +105,8 @@ class _SessionConfigRow(BaseModel):
     agent_version: str
     toolbox_versions: dict[str, str]
     tool_refs: list[str]
+
+    _parse_toolbox_versions = field_validator("toolbox_versions", mode="before")(parse_jsonb)
 
 
 class _NamespaceAuthRow(BaseModel):

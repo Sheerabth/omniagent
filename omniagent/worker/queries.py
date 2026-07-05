@@ -1,202 +1,294 @@
-"""SQL queries for the worker — separated from job/lifecycle/event logic.
+"""All SQL queries and expressions used by the worker.
 
-Every ``await conn.execute(sql, ...)`` in the worker layer draws its SQL from
-this module.  Static queries are plain ``str`` constants; dynamic queries
-(parameterised by ``SessionStatus``, optional columns, etc.) use builder
-functions that return the SQL string.
+Every ``text()`` call and every Core expression that involves bind parameters
+lives here — no worker file should contain inline SQL.  Worker files import
+from here and only call ``conn.execute()``.
 
-Naming conventions
-------------------
-- ``select_<table>_<what>``   — SELECT
-- ``insert_<table>``          — INSERT
-- ``update_<table>_<what>``   — UPDATE
-- ``upsert_<table>``          — INSERT … ON CONFLICT DO UPDATE
-- ``delete_<table>_<what>``   — DELETE
-- ``<verb>_<table>_<what>_for_update`` — row-level lock
-- ``build_<verb>_<table>_<what>``     — function returning SQL (dynamic parts)
+PostgreSQL-specific constructs (``jsonb`` ops, ``pg_notify``, ``CAST``) remain
+as ``text()``; simple CRUD is written as SQLAlchemy Core expressions.
 """
 
-from omniagent.constants import SessionStatus
+from sqlalchemy import bindparam, func, insert, select, text, update
 
-# ── sessions ─────────────────────────────────────────────────────────────
-
-select_session_for_update = "SELECT status, messages FROM sessions WHERE id=%s"
-
-select_session_langfuse_trace = "SELECT langfuse_trace_id FROM sessions WHERE id = %s"
-
-update_session_langfuse_trace = "UPDATE sessions SET langfuse_trace_id = %s WHERE id = %s"
-
-select_session_msg_count_and_cancel = (
-    "SELECT jsonb_array_length(messages) as msg_count, cancel_requested "
-    "FROM sessions WHERE id=%s FOR UPDATE"
+from omniagent.tables import (
+    agent_memory,
+    agents,
+    namespace_auth,
+    schedules,
+    sessions,
+    toolboxes,
+    tools,
 )
 
-select_session_messages = "SELECT messages FROM sessions WHERE id=%s"
+# ── Reusable value expressions ────────────────────────────────────────────────
 
-update_session_set_status_running = (
-    f"UPDATE sessions SET status='{SessionStatus.RUNNING}', updated_at=NOW() WHERE id=%s"
+now_expr = func.now()
+
+# ── Session queries (job.py / lifecycle.py / config.py) ───────────────────────
+
+# Lock session + fetch status + messages for turn execution
+lock_session = (
+    select(sessions.c.status, sessions.c.messages)
+    .where(sessions.c.id == bindparam("session_id"))
+    .with_for_update()
 )
 
-update_session_status_failed_running = f"UPDATE sessions SET status='{SessionStatus.FAILED}', updated_at=NOW() WHERE id=%s AND status='{SessionStatus.RUNNING}'"
-
-update_session_tool_calls = "UPDATE sessions SET tool_calls = tool_calls || %s::jsonb WHERE id=%s"
-
-# ── sessions (dynamic status-based queries) ──────────────────────────────
-
-
-def build_update_session_status_where(from_status: str, to_status: str) -> str:
-    """Build an UPDATE that transitions *from* a known status *to* another.
-
-    The WHERE clause includes ``AND status='{from_status}'`` so that
-    concurrent transitions that already moved past *from_status* are no-ops.
-    """
-    return (
-        f"UPDATE sessions SET status='{to_status}', updated_at=NOW() "
-        f"WHERE id=%s AND status='{from_status}'"
+# Lock session + fetch message count (jsonb_array_length) + cancel flag
+lock_session_with_msg_count = (
+    select(
+        text("jsonb_array_length(messages) as msg_count"),
+        sessions.c.cancel_requested,
     )
+    .where(sessions.c.id == bindparam("session_id"))
+    .with_for_update()
+)
 
+# Fetch messages for a session
+session_messages_by_id = select(sessions.c.messages).where(sessions.c.id == bindparam("session_id"))
 
-def build_update_session_complete(clear_trace: str) -> str:
-    """Build the UPDATE used by ``_complete_session`` after a successful turn.
+# Fetch session config info
+session_agent_by_id = select(
+    sessions.c.agent_name,
+    sessions.c.agent_version,
+    sessions.c.toolbox_versions,
+    sessions.c.tool_refs,
+).where(sessions.c.id == bindparam("session_id"))
 
-    *clear_trace* is either ``''`` (when there is queued input — keep the
-    Langfuse trace for the next turn) or ``', langfuse_trace_id = NULL'``
-    (terminal state).
-    """
-    return (
-        f"UPDATE sessions SET status=%s, "
-        f"messages = messages || %s::jsonb, "
-        f"updated_at=NOW(){clear_trace} WHERE id=%s"
+# Fetch langfuse trace id
+session_langfuse_trace_id = select(sessions.c.langfuse_trace_id).where(
+    sessions.c.id == bindparam("session_id")
+)
+
+# ── State transitions ─────────────────────────────────────────────────────────
+
+# Update session status (used in job.py for pending→running)
+set_session_status = (
+    update(sessions)
+    .where(sessions.c.id == bindparam("session_id"))
+    .values(status=bindparam("_status"), updated_at=now_expr)
+)
+
+# Update langfuse trace id on session
+update_session_langfuse_trace = (
+    update(sessions)
+    .where(sessions.c.id == bindparam("session_id"))
+    .values(langfuse_trace_id=bindparam("_trace_id"))
+)
+
+# ── JSONB update operations (raw text, PostgreSQL-specific) ───────────────────
+
+# Cancel path: jsonb_insert a marker at a specific position
+update_session_cancel = text(
+    "UPDATE sessions SET status = :status, "
+    "messages = jsonb_insert(messages, CAST(:path AS text[]), CAST(:marker AS jsonb)), "
+    "cancel_requested = false, updated_at = NOW() "
+    "WHERE id = :session_id"
+)
+
+# Cancel path: same but also clear langfuse_trace_id
+update_session_cancel_clear_trace = text(
+    "UPDATE sessions SET status = :status, "
+    "messages = jsonb_insert(messages, CAST(:path AS text[]), CAST(:marker AS jsonb)), "
+    "cancel_requested = false, updated_at = NOW(), langfuse_trace_id = NULL "
+    "WHERE id = :session_id"
+)
+
+# Normal complete path: append messages via jsonb ||
+update_session_append_messages = text(
+    "UPDATE sessions SET status = :status, "
+    "messages = messages || CAST(:messages AS jsonb), "
+    "updated_at = NOW() "
+    "WHERE id = :session_id"
+)
+
+# Normal complete path: same but also clear langfuse_trace_id
+update_session_append_messages_clear_trace = text(
+    "UPDATE sessions SET status = :status, "
+    "messages = messages || CAST(:messages AS jsonb), "
+    "updated_at = NOW(), langfuse_trace_id = NULL "
+    "WHERE id = :session_id"
+)
+
+# Defer non-cancel path: replace messages + deferred_payload
+update_session_deferred = text(
+    "UPDATE sessions SET status = :status, "
+    "messages = :messages, deferred_payload = :deferred_payload, "
+    "updated_at = NOW() WHERE id = :session_id"
+)
+
+# ── pg_notify ─────────────────────────────────────────────────────────────────
+
+select_pg_notify = text("SELECT pg_notify(:channel, :payload)")
+
+# ── Event: set session to failed ──────────────────────────────────────────────
+
+set_session_failed = (
+    update(sessions)
+    .where(
+        sessions.c.id == bindparam("session_id"),
+        sessions.c.status == bindparam("_status"),
     )
+    .values(status=bindparam("_new_status"), updated_at=now_expr)
+)
 
+# ── Event: append tool call ───────────────────────────────────────────────────
 
-def build_update_session_insert_cancel_marker(clear_trace: str) -> str:
-    """Build the UPDATE that inserts the ``[CANCELLED]`` marker into messages.
+update_session_tool_calls = text(
+    "UPDATE sessions SET tool_calls = tool_calls || CAST(:tc AS jsonb), "
+    "updated_at = NOW() WHERE id = :session_id"
+)
 
-    Used by both ``_complete_session`` and ``_handle_defer`` when
-    ``cancel_requested`` is true during the turn.
-    """
-    return (
-        f"UPDATE sessions SET status=%s, "
-        f"messages = jsonb_insert(messages, %s::text[], %s::jsonb), "
-        f"cancel_requested=false, updated_at=NOW(){clear_trace} WHERE id=%s"
+# ── Agent / Toolbox / Tool queries (config.py) ────────────────────────────────
+
+select_agent_by_name_version = select(agents).where(
+    agents.c.name == bindparam("name"),
+    agents.c.version == bindparam("version"),
+)
+
+select_toolbox_by_name_version = select(toolboxes).where(
+    toolboxes.c.name == bindparam("name"),
+    toolboxes.c.version == bindparam("version"),
+)
+
+select_tools_by_names = select(tools).where(tools.c.name == bindparam("names"))
+
+select_namespace_auth_by_namespace = select(
+    namespace_auth.c.namespace,
+    namespace_auth.c.scheme_name,
+    namespace_auth.c.auth_context,
+).where(namespace_auth.c.namespace == bindparam("namespaces"))
+
+# ── Scheduler queries ─────────────────────────────────────────────────────────
+
+select_agent_by_name_latest = (
+    select(
+        agents.c.name,
+        agents.c.version,
+        agents.c.toolbox_refs,
+        agents.c.tool_refs,
     )
+    .where(agents.c.name == bindparam("name"))
+    .order_by(agents.c.created_at.desc())
+    .limit(1)
+)
 
-
-def build_update_session_deferred_for_cancel() -> str:
-    """Return: ``UPDATE sessions SET status='{DEFERRED}', … WHERE id=%s``.
-
-    This is a trivial wrapper for consistency — the status is always
-    ``deferred``.  Consumers may call this inline if they prefer.
-    """
-    return (
-        f"UPDATE sessions SET status='{SessionStatus.DEFERRED}', "
-        f"messages=%s, deferred_payload=%s, updated_at=NOW() WHERE id=%s"
+select_active_session_by_schedule = (
+    select(sessions.c.id)
+    .where(
+        sessions.c.schedule_id == bindparam("schedule_id"),
+        sessions.c.status.in_(["pending", "running"]),
     )
-
-
-# ── sessions (config loading) ────────────────────────────────────────────
-
-select_session_config = (
-    "SELECT agent_name, agent_version, toolbox_versions, tool_refs " "FROM sessions WHERE id = %s"
+    .limit(1)
 )
 
-
-# ── agents ──────────────────────────────────────────────────────────────
-
-select_agent_by_name_version = "SELECT * FROM agents WHERE name = %s AND version = %s"
-
-select_agent_latest_by_name = (
-    "SELECT name, version, toolbox_refs, tool_refs FROM agents "
-    "WHERE name = %s ORDER BY created_at DESC LIMIT 1"
+insert_session_from_schedule = text(
+    "INSERT INTO sessions "
+    "(agent_name, agent_version, toolbox_versions, tool_refs, "
+    "status, messages, schedule_id, is_scheduled) "
+    "VALUES (:agent_name, :agent_version, :toolbox_versions, :tool_refs, "
+    "'pending', :messages, :schedule_id, true) "
+    "RETURNING id"
 )
 
-
-# ── toolboxes ────────────────────────────────────────────────────────────
-
-select_toolbox_by_name_version = "SELECT * FROM toolboxes WHERE name = %s AND version = %s"
-
-
-# ── tools ────────────────────────────────────────────────────────────────
-
-select_tools_by_names = "SELECT * FROM tools WHERE name = ANY(%s)"
-
-
-# ── namespace_auth ───────────────────────────────────────────────────────
-
-select_namespace_auth_by_namespaces = (
-    "SELECT namespace, scheme_name, auth_context FROM namespace_auth " "WHERE namespace = ANY(%s)"
+select_due_schedules = select(
+    schedules.c.id,
+    schedules.c.agent_name,
+    schedules.c.cron_expr,
+    schedules.c.prompt,
+).where(
+    schedules.c.enabled == True,  # noqa: E712
+    text("(next_run_at IS NULL OR next_run_at <= NOW())"),
 )
 
-
-# ── agent_memory ─────────────────────────────────────────────────────────
-
-select_memory_by_key = "SELECT value FROM agent_memory WHERE agent_name=%s AND key=%s"
-
-upsert_agent_memory = """INSERT INTO agent_memory (agent_name, key, value, updated_at)
-       VALUES (%s, %s, %s, NOW())
-       ON CONFLICT (agent_name, key)
-       DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()"""
-
-delete_agent_memory = "DELETE FROM agent_memory WHERE agent_name=%s AND key=%s"
-
-select_memory_keys_by_agent = "SELECT key FROM agent_memory WHERE agent_name=%s ORDER BY key"
-
-
-# ── schedules ────────────────────────────────────────────────────────────
-
-select_schedules_due = (
-    "SELECT id, agent_name, cron_expr, prompt FROM schedules "
-    "WHERE enabled = TRUE AND (next_run_at IS NULL OR next_run_at <= NOW())"
+update_schedule_after_fire = (
+    update(schedules)
+    .where(schedules.c.id == bindparam("schedule_id"))
+    .values(
+        last_run_at=now_expr,
+        next_run_at=bindparam("next_run_at"),
+        updated_at=now_expr,
+    )
 )
 
-update_schedule_fired = (
-    "UPDATE schedules SET last_run_at=NOW(), next_run_at=%s, updated_at=NOW() WHERE id=%s"
+# ── Memory queries (tools.py) ─────────────────────────────────────────────────
+
+select_memory_value = select(agent_memory.c.value).where(
+    agent_memory.c.agent_name == bindparam("agent_name"),
+    agent_memory.c.key == bindparam("key"),
 )
 
-select_schedule_active_session = (
-    f"SELECT id FROM sessions WHERE schedule_id=%s AND "
-    f"status IN ('{SessionStatus.PENDING}','{SessionStatus.RUNNING}') LIMIT 1"
+select_memory_keys = (
+    select(agent_memory.c.key)
+    .where(agent_memory.c.agent_name == bindparam("agent_name"))
+    .order_by(agent_memory.c.key)
 )
 
-insert_session_from_schedule = f"""INSERT INTO sessions (agent_name, agent_version, toolbox_versions, tool_refs, status, messages, schedule_id, is_scheduled)
-       VALUES (%s, %s, %s, %s, '{SessionStatus.PENDING}', %s, %s, TRUE) RETURNING id"""
+delete_memory = text("DELETE FROM agent_memory WHERE agent_name = :agent_name AND key = :key")
 
-select_schedules_by_agent = "SELECT * FROM schedules WHERE agent_name=%s ORDER BY created_at DESC"
+# ── Schedule list/update queries (tools.py) ───────────────────────────────────
 
-insert_schedule = """INSERT INTO schedules (agent_name, cron_expr, prompt, next_run_at)
-       VALUES (%s, %s, %s, %s) RETURNING id"""
-
-select_schedule_by_id_and_agent = (
-    "SELECT cron_expr, prompt FROM schedules WHERE id=%s AND agent_name=%s"
+select_schedules_by_agent = (
+    select(schedules)
+    .where(schedules.c.agent_name == bindparam("agent_name"))
+    .order_by(schedules.c.created_at.desc())
 )
 
-update_schedule_by_id_and_agent = (
-    "UPDATE schedules SET cron_expr=%s, prompt=%s, next_run_at=%s WHERE id=%s AND agent_name=%s"
+select_schedule_by_id_agent = select(schedules.c.cron_expr, schedules.c.prompt).where(
+    schedules.c.id == bindparam("schedule_id"),
+    schedules.c.agent_name == bindparam("agent_name"),
 )
 
-cancel_sessions_for_schedule = (
-    f"UPDATE sessions SET status='{SessionStatus.CANCELLED}', updated_at=NOW() "
-    f"WHERE schedule_id=%s AND status='{SessionStatus.PENDING}'"
+update_schedule_by_id_agent = (
+    update(schedules)
+    .where(
+        schedules.c.id == bindparam("schedule_id"),
+        schedules.c.agent_name == bindparam("agent_name"),
+    )
+    .values(
+        cron_expr=bindparam("cron_expr"),
+        prompt=bindparam("prompt"),
+        next_run_at=bindparam("next_run_at"),
+    )
 )
 
-delete_schedule_by_id_and_agent = "DELETE FROM schedules WHERE id=%s AND agent_name=%s"
-
-
-# ── oauth_token_cache ────────────────────────────────────────────────────
-
-select_oauth_token_valid = (
-    "SELECT token FROM oauth_token_cache WHERE cache_key=%s AND expires_at > NOW()"
+insert_schedule = (
+    insert(schedules)
+    .values(
+        agent_name=bindparam("agent_name"),
+        cron_expr=bindparam("cron_expr"),
+        prompt=bindparam("prompt"),
+        next_run_at=bindparam("next_run_at"),
+    )
+    .returning(schedules.c.id)
 )
 
-delete_expired_oauth_tokens = "DELETE FROM oauth_token_cache WHERE expires_at < NOW()"
+cancel_pending_sessions_by_schedule = text(
+    "UPDATE sessions SET status = 'cancelled', updated_at = NOW() "
+    "WHERE schedule_id = :schedule_id AND status = 'pending'"
+)
 
-upsert_oauth_token = """INSERT INTO oauth_token_cache (cache_key, token, expires_at)
-       VALUES (%s, %s, NOW() + %s * INTERVAL '1 second')
-       ON CONFLICT (cache_key) DO UPDATE
-       SET token=EXCLUDED.token, expires_at=EXCLUDED.expires_at"""
+delete_schedule = text("DELETE FROM schedules WHERE id = :schedule_id AND agent_name = :agent_name")
 
+# ── Agent memory upsert (tools.py) ────────────────────────────────────────────
 
-# ── pg_notify ────────────────────────────────────────────────────────────
+upsert_agent_memory = text(
+    "INSERT INTO agent_memory (agent_name, key, value, updated_at) "
+    "VALUES (:agent_name, :key, :value, NOW()) "
+    "ON CONFLICT (agent_name, key) "
+    "DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()"
+)
 
-pg_notify = "SELECT pg_notify(%s, %s)"
+# ── OAuth token cache queries (auth.py) ───────────────────────────────────────
+
+select_oauth_token_valid = text(
+    "SELECT token FROM oauth_token_cache WHERE cache_key = :cache_key AND expires_at > NOW()"
+)
+
+delete_expired_oauth_tokens = text("DELETE FROM oauth_token_cache WHERE expires_at < NOW()")
+
+upsert_oauth_token = text(
+    "INSERT INTO oauth_token_cache (cache_key, token, expires_at) "
+    "VALUES (:cache_key, :token, NOW() + :ttl * INTERVAL '1 second') "
+    "ON CONFLICT (cache_key) DO UPDATE "
+    "SET token = EXCLUDED.token, expires_at = EXCLUDED.expires_at"
+)

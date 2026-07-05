@@ -26,10 +26,10 @@ from omniagent.worker.models import BaseEvent, ErrorEvent, SystemPromptEvent
 from omniagent.worker.native import NATIVE_TOOL_DESCRIPTIONS, DeferInfo
 from omniagent.worker.prompts import _build_system_prompt, _make_native_tool_snapshot
 from omniagent.worker.queries import (
-    select_session_for_update,
-    select_session_langfuse_trace,
+    lock_session,
+    session_langfuse_trace_id,
+    set_session_status,
     update_session_langfuse_trace,
-    update_session_set_status_running,
 )
 from omniagent.worker.tools import NativeToolContext, NativeToolExecutor
 
@@ -69,11 +69,11 @@ async def run_agent_job(session_id: str) -> None:
     job_start = time.monotonic()
 
     async with get_conn() as conn:
-        row = await (
-            await conn.execute(
-                select_session_for_update, (session_id,)
-            )  # pyright: ignore[reportArgumentType]
-        ).fetchone()
+        result = await conn.execute(
+            lock_session,
+            {"session_id": session_id},
+        )
+        row = result.mappings().fetchone()
         if not row:
             logger.warning("run_agent_job: session %s not found, skipping", session_id)
             return
@@ -83,8 +83,8 @@ async def run_agent_job(session_id: str) -> None:
         history = [MessageRecord.model_validate(m) for m in (row["messages"] or [])]
         if row["status"] in (SessionStatus.PENDING, SessionStatus.DEFERRED):
             await conn.execute(
-                update_session_set_status_running,  # pyright: ignore[reportArgumentType]
-                (session_id,),
+                set_session_status,
+                {"session_id": session_id, "_status": SessionStatus.RUNNING},
             )
             await _emit_event(session_id, BaseEvent(type=EventType.RUNNING))
 
@@ -153,11 +153,11 @@ async def run_agent_job(session_id: str) -> None:
     if _langfuse:
         try:
             async with get_conn() as conn:
-                rows = await conn.execute(
-                    select_session_langfuse_trace,  # pyright: ignore[reportArgumentType]
-                    (session_id,),
+                result = await conn.execute(
+                    session_langfuse_trace_id,
+                    {"session_id": session_id},
                 )
-                row = await rows.fetchone()
+                row = result.mappings().fetchone()
             if row and row["langfuse_trace_id"]:
                 _lf_existing_trace_id = row["langfuse_trace_id"]
         except Exception:
@@ -195,8 +195,8 @@ async def run_agent_job(session_id: str) -> None:
                     if _actual_id:
                         async with get_conn() as conn:
                             await conn.execute(
-                                update_session_langfuse_trace,  # pyright: ignore[reportArgumentType]
-                                (_actual_id, session_id),
+                                update_session_langfuse_trace,
+                                {"session_id": session_id, "_trace_id": _actual_id},
                             )
                 except Exception:
                     pass

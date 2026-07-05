@@ -13,13 +13,13 @@ logger = logging.getLogger(__name__)
 async def main() -> None:
     from procrastinate.worker import Worker
 
-    from omniagent.db import close_pool, init_pool
+    from omniagent.db import close_db, init_db
     from omniagent.migrations import run_migrations
     from omniagent.worker.job import app, run_agent_job  # noqa: F401 — registers task
     from omniagent.worker.scheduler import check_schedules  # noqa: F401 — registers periodic task
 
     await run_migrations(settings.database_url)
-    await init_pool()
+    await init_db(settings.database_url)
 
     concurrency = settings.worker_concurrency
     logger.info(
@@ -31,7 +31,7 @@ async def main() -> None:
         worker = Worker(app, queues=[settings.worker_queue_name], concurrency=concurrency)
         await worker.run()
 
-    await close_pool()
+    await close_db()
 
 
 if __name__ == "__main__":

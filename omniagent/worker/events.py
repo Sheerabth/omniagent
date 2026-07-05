@@ -8,11 +8,7 @@ from omniagent.api.models import ToolCallEntry
 from omniagent.constants import EventType, NotifyType, session_channel
 from omniagent.db import get_conn
 from omniagent.worker.models import BaseEvent
-from omniagent.worker.queries import (
-    pg_notify,
-    update_session_status_failed_running,
-    update_session_tool_calls,
-)
+from omniagent.worker.queries import select_pg_notify, set_session_failed, update_session_tool_calls
 
 logger = logging.getLogger(__name__)
 
@@ -23,10 +19,17 @@ async def _emit_event(session_id: str, event: BaseEvent) -> None:
         if event.type == EventType.ERROR:
             async with get_conn() as conn:
                 await conn.execute(
-                    update_session_status_failed_running,  # pyright: ignore[reportArgumentType]
-                    (session_id,),
+                    set_session_failed,
+                    {
+                        "session_id": session_id,
+                        "_status": "running",
+                        "_new_status": "failed",
+                    },
                 )
-                await conn.execute(pg_notify, (ch, NotifyType.ERROR))
+                await conn.execute(
+                    select_pg_notify,
+                    {"channel": ch, "payload": NotifyType.ERROR},
+                )
         elif event.type == EventType.TOOL_RESULT:
             ev = event.model_dump(exclude_none=True)
             if ev.get("input") is not None and "output" in ev:
@@ -44,12 +47,18 @@ async def _emit_event(session_id: str, event: BaseEvent) -> None:
                 )
                 async with get_conn() as conn:
                     await conn.execute(
-                        update_session_tool_calls,  # pyright: ignore[reportArgumentType]
-                        (f"[{entry_json}]", session_id),
+                        update_session_tool_calls,
+                        {"tc": f"[{entry_json}]", "session_id": session_id},
                     )
-                    await conn.execute(pg_notify, (ch, NotifyType.UPDATE))
+                    await conn.execute(
+                        select_pg_notify,
+                        {"channel": ch, "payload": NotifyType.UPDATE},
+                    )
         else:
             async with get_conn() as conn:
-                await conn.execute(pg_notify, (ch, event.type))
+                await conn.execute(
+                    select_pg_notify,
+                    {"channel": ch, "payload": event.type},
+                )
     except Exception as exc:
         logger.warning("emit_event failed: %s", exc)
