@@ -12,9 +12,23 @@ from omniagent.api.models import (
     RunRequest,
     SessionCreate,
     SessionRecord,
-    SessionStatus,
-    ToolCallEntry,
 )
+from omniagent.api.models import SessionStatus as SessionStatusResponse
+from omniagent.api.models import ToolCallEntry
+from omniagent.api.queries import (
+    build_update_session_status_pending_returning,
+    delete_session_by_id,
+    insert_session,
+    select_agent_by_name_version,
+    select_agent_latest,
+    select_session_for_update,
+    select_session_full,
+    select_sessions_recent,
+    update_session_cancel_requested,
+    update_session_messages_append,
+)
+from omniagent.config import settings
+from omniagent.constants import NotifyType, SessionStatus, session_channel
 from omniagent.db import get_conn
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
@@ -27,12 +41,12 @@ async def create_session(
     async with get_conn() as conn:
         if body.agent_version:
             rows = await conn.execute(
-                "SELECT * FROM agents WHERE name = %s AND version = %s",
+                select_agent_by_name_version,
                 (body.agent_name, body.agent_version),
             )
         else:
             rows = await conn.execute(
-                "SELECT * FROM agents WHERE name = %s ORDER BY created_at DESC LIMIT 1",
+                select_agent_latest,
                 (body.agent_name,),
             )
         agent = await rows.fetchone()
@@ -43,11 +57,7 @@ async def create_session(
         tool_refs = agent["tool_refs"] or []
 
         rows = await conn.execute(
-            """
-            INSERT INTO sessions (agent_name, agent_version, toolbox_versions, tool_refs)
-            VALUES (%s, %s, %s, %s)
-            RETURNING *
-            """,
+            insert_session,
             (body.agent_name, agent["version"], json.dumps(toolbox_versions), tool_refs),
         )
         row = await rows.fetchone()
@@ -73,28 +83,26 @@ async def run_session(
 
     async with get_conn() as conn:
         # Row lock so a concurrent /run can't race the busy-check below.
-        rows = await conn.execute(
-            "SELECT status FROM sessions WHERE id = %s FOR UPDATE", (session_id,)
-        )
+        rows = await conn.execute(select_session_for_update, (session_id,))
         session = await rows.fetchone()
         if not session:
             raise HTTPException(404)
 
-        was_idle = session["status"] in ("idle", "failed", "cancelled")
-        new_status = "pending" if was_idle else session["status"]
+        was_idle = session["status"] in (
+            SessionStatus.IDLE,
+            SessionStatus.FAILED,
+            SessionStatus.CANCELLED,
+        )
+        new_status = SessionStatus.PENDING if was_idle else session["status"]
         await conn.execute(
-            """
-            UPDATE sessions
-            SET messages = messages || %s::jsonb, status = %s, updated_at = NOW()
-            WHERE id = %s
-            """,
+            update_session_messages_append,
             (json.dumps([new_message]), new_status, session_id),
         )
 
         if was_idle:
             from omniagent.worker.job import run_agent_job
 
-            await run_agent_job.configure(queue="default").defer_async(
+            await run_agent_job.configure(queue=settings.worker_queue_name).defer_async(
                 session_id=str(session_id),
             )
 
@@ -107,11 +115,11 @@ async def resume_session(
 ) -> JSONResponse:
     """Inject a tool result into a deferred session and schedule the next turn."""
     async with get_conn() as conn:
-        rows = await conn.execute("SELECT * FROM sessions WHERE id = %s", (session_id,))
+        rows = await conn.execute(select_session_full, (session_id,))
         session = await rows.fetchone()
         if not session:
             raise HTTPException(404)
-        if session["status"] != "deferred":
+        if session["status"] != SessionStatus.DEFERRED:
             raise HTTPException(409, detail="Session is not deferred")
 
         messages = session["messages"] or []
@@ -125,8 +133,9 @@ async def resume_session(
         )
 
         rows = await conn.execute(
-            """UPDATE sessions SET status='pending', messages=%s, updated_at=NOW()
-               WHERE id=%s AND status='deferred' RETURNING id""",
+            build_update_session_status_pending_returning(
+                SessionStatus.DEFERRED
+            ),  # pyright: ignore[reportArgumentType]
             (json.dumps(messages), session_id),
         )
         if not await rows.fetchone():
@@ -134,7 +143,7 @@ async def resume_session(
 
         from omniagent.worker.job import run_agent_job
 
-        await run_agent_job.configure(queue="default").defer_async(
+        await run_agent_job.configure(queue=settings.worker_queue_name).defer_async(
             session_id=str(session_id),
         )
 
@@ -144,9 +153,7 @@ async def resume_session(
 @router.get("", response_model=list[SessionRecord])
 async def list_sessions(_=Depends(require_scope("sessions:read"))) -> list[SessionRecord]:
     async with get_conn() as conn:
-        rows = await conn.execute(
-            "SELECT * FROM sessions WHERE is_scheduled = FALSE ORDER BY created_at DESC LIMIT 100"
-        )
+        rows = await conn.execute(select_sessions_recent)
         return [SessionRecord.model_validate(dict(r)) for r in await rows.fetchall()]
 
 
@@ -160,27 +167,29 @@ async def cancel_session(session_id: uuid.UUID, _=Depends(require_scope("session
     or straight into a follow-up turn if more was queued meanwhile) and
     writes status itself. See job.py:_complete_session / _handle_defer.
     """
-    ch = "session_" + str(session_id).replace("-", "_")
+    from omniagent.api.queries import pg_notify
+
+    ch = session_channel(session_id)
     async with get_conn() as conn:
         await conn.execute(
-            "UPDATE sessions SET cancel_requested=true, updated_at=NOW() WHERE id=%s AND status IN ('running','pending','deferred')",
-            (session_id,),
+            update_session_cancel_requested,
+            (session_id, SessionStatus.RUNNING, SessionStatus.PENDING, SessionStatus.DEFERRED),
         )
-        await conn.execute("SELECT pg_notify(%s, %s)", (ch, "cancelling"))
+        await conn.execute(pg_notify, (ch, NotifyType.CANCELLING))
 
 
 @router.delete("/{session_id}", status_code=204)
 async def delete_session(session_id: uuid.UUID, _=Depends(require_scope("sessions:write"))) -> None:
     async with get_conn() as conn:
-        await conn.execute("DELETE FROM sessions WHERE id = %s", (session_id,))
+        await conn.execute(delete_session_by_id, (session_id,))
 
 
-@router.get("/{session_id}/status", response_model=SessionStatus)
+@router.get("/{session_id}/status", response_model=SessionStatusResponse)
 async def get_session_status(
     session_id: uuid.UUID, _=Depends(require_scope("sessions:read"))
-) -> SessionStatus:
+) -> SessionStatusResponse:
     async with get_conn() as conn:
-        rows = await conn.execute("SELECT * FROM sessions WHERE id = %s", (session_id,))
+        rows = await conn.execute(select_session_full, (session_id,))
         session = await rows.fetchone()
     if not session:
         raise HTTPException(404)
@@ -191,7 +200,7 @@ async def get_session_status(
         None,
     )
     tool_calls = [ToolCallEntry.model_validate(tc) for tc in (session["tool_calls"] or [])]
-    return SessionStatus(
+    return SessionStatusResponse(
         status=session["status"],
         result=last_assistant,
         messages=messages,

@@ -13,6 +13,14 @@ from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_
 
 from omniagent import db
 from omniagent.api import queue
+from omniagent.api.queries import (
+    build_select_stuck_sessions,
+    build_update_session_set_status_where_status,
+    pg_notify,
+    select_advisory_unlock,
+    select_one,
+    select_try_advisory_lock,
+)
 from omniagent.api.routes import (
     agents,
     auth,
@@ -26,6 +34,7 @@ from omniagent.api.routes import (
     toolboxes,
     tools,
 )
+from omniagent.constants import X_TRACE_ID, NotifyType, SessionStatus, session_channel
 from omniagent.logging_config import configure_logging, trace_id_var
 
 configure_logging()
@@ -58,25 +67,29 @@ async def _mark_session_failed(session_id: str) -> None:
     sid = uuid.UUID(session_id)
     async with db.get_conn() as conn:
         await conn.execute(
-            "UPDATE sessions SET status='failed', updated_at=NOW() WHERE id=%s AND status='running'",
+            build_update_session_set_status_where_status(  # pyright: ignore[reportArgumentType]
+                SessionStatus.FAILED, SessionStatus.RUNNING
+            ),
             (sid,),
         )
-    ch = "session_" + str(sid).replace("-", "_")
+    ch = session_channel(sid)
     async with db.get_conn() as conn:
-        await conn.execute("SELECT pg_notify(%s, %s)", (ch, "error"))
+        await conn.execute(pg_notify, (ch, NotifyType.ERROR))
 
 
 async def _reconcile_stuck_sessions() -> None:
     async with db.get_conn() as conn:
         # Advisory lock prevents race when multiple CP instances start simultaneously
-        locked = await conn.execute("SELECT pg_try_advisory_lock(hashtext('omniagent_reconcile'))")
+        locked = await conn.execute(select_try_advisory_lock)
         lock_row = await locked.fetchone()
         if not lock_row or not lock_row["pg_try_advisory_lock"]:
             logger.info("reconcile: another instance holds lock, skipping")
             return
         try:
             rows = await conn.execute(
-                "SELECT id, status FROM sessions WHERE status IN ('running', 'pending')"
+                build_select_stuck_sessions(  # pyright: ignore[reportArgumentType, reportCallIssue]
+                    SessionStatus.RUNNING, SessionStatus.PENDING
+                ),
             )
             stuck = await rows.fetchall()
             for row in stuck:
@@ -86,11 +99,13 @@ async def _reconcile_stuck_sessions() -> None:
                     row["status"],
                 )
                 await conn.execute(
-                    "UPDATE sessions SET status='failed', updated_at=NOW() WHERE id=%s",
+                    build_update_session_set_status_where_status(  # pyright: ignore[reportArgumentType]
+                        SessionStatus.FAILED, SessionStatus.RUNNING
+                    ),
                     (row["id"],),
                 )
         finally:
-            await conn.execute("SELECT pg_advisory_unlock(hashtext('omniagent_reconcile'))")
+            await conn.execute(select_advisory_unlock)
 
 
 @asynccontextmanager
@@ -119,7 +134,7 @@ app = FastAPI(title="OmniAgent Control Plane", lifespan=lifespan)
 
 @app.middleware("http")
 async def trace_and_metrics(request: Request, call_next):
-    trace_id = request.headers.get("X-Trace-Id", str(uuid.uuid4()))
+    trace_id = request.headers.get(X_TRACE_ID, str(uuid.uuid4()))
     token = trace_id_var.set(trace_id)
     start = time.monotonic()
     status = "500"
@@ -134,7 +149,7 @@ async def trace_and_metrics(request: Request, call_next):
         REQUEST_LATENCY.labels(request.method, path).observe(time.monotonic() - start)
         REQUEST_COUNT.labels(request.method, path, status).inc()
         trace_id_var.reset(token)
-    response.headers["X-Trace-Id"] = trace_id
+    response.headers[X_TRACE_ID] = trace_id
     return response
 
 
@@ -148,7 +163,7 @@ async def metrics() -> Response:
 async def health() -> JSONResponse:
     try:
         async with db.get_conn() as conn:
-            await conn.execute("SELECT 1")
+            await conn.execute(select_one)
         return JSONResponse({"status": "ok", "db": "ok"})
     except Exception as e:
         return JSONResponse({"status": "error", "db": str(e)}, status_code=503)

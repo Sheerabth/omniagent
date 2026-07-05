@@ -10,13 +10,19 @@ from omniagent.worker.models import (
     _NamespaceAuthRow,
     _SessionConfigRow,
 )
+from omniagent.worker.queries import (
+    select_agent_by_name_version,
+    select_namespace_auth_by_namespaces,
+    select_session_config,
+    select_toolbox_by_name_version,
+    select_tools_by_names,
+)
 
 
 async def _fetch_session_config(session_id: str) -> SessionConfig:
     async with get_conn() as conn:
         rows = await conn.execute(
-            "SELECT agent_name, agent_version, toolbox_versions, tool_refs "
-            "FROM sessions WHERE id = %s",
+            select_session_config,  # pyright: ignore[reportArgumentType]
             (session_id,),
         )
         session_row = await rows.fetchone()
@@ -25,7 +31,7 @@ async def _fetch_session_config(session_id: str) -> SessionConfig:
         session = _SessionConfigRow.model_validate(dict(session_row))
 
         rows = await conn.execute(
-            "SELECT * FROM agents WHERE name = %s AND version = %s",
+            select_agent_by_name_version,  # pyright: ignore[reportArgumentType]
             (session.agent_name, session.agent_version),
         )
         agent_row = await rows.fetchone()
@@ -41,7 +47,7 @@ async def _fetch_session_config(session_id: str) -> SessionConfig:
         tool_to_toolbox: dict[str, str] = {}
         for tname, toolbox_version in session.toolbox_versions.items():
             rows = await conn.execute(
-                "SELECT * FROM toolboxes WHERE name = %s AND version = %s",
+                select_toolbox_by_name_version,  # pyright: ignore[reportArgumentType]
                 (tname, toolbox_version),
             )
             toolbox_row = await rows.fetchone()
@@ -57,7 +63,10 @@ async def _fetch_session_config(session_id: str) -> SessionConfig:
         all_tool_names = list(set(toolbox_tool_names + session.tool_refs))
         tool_rows: dict[str, ToolRecord] = {}
         if all_tool_names:
-            rows = await conn.execute("SELECT * FROM tools WHERE name = ANY(%s)", (all_tool_names,))
+            rows = await conn.execute(
+                select_tools_by_names,  # pyright: ignore[reportArgumentType]
+                (all_tool_names,),
+            )
             for row in await rows.fetchall():
                 tool = ToolRecord.model_validate(dict(row))
                 tool_rows[tool.name] = tool
@@ -74,8 +83,7 @@ async def _fetch_session_config(session_id: str) -> SessionConfig:
         if ns_scheme_pairs:
             namespaces = list({p[0] for p in ns_scheme_pairs})
             rows = await conn.execute(
-                "SELECT namespace, scheme_name, auth_context FROM namespace_auth "
-                "WHERE namespace = ANY(%s)",
+                select_namespace_auth_by_namespaces,  # pyright: ignore[reportArgumentType]
                 (namespaces,),
             )
             ns_scheme_set = set(ns_scheme_pairs)

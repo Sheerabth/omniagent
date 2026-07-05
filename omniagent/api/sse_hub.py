@@ -34,7 +34,7 @@ _stopped = False
 # polling windows, when the connection's lock is free to execute() on.
 _pending: "asyncio.Queue[tuple[str, str, asyncio.Event]]" = asyncio.Queue()
 
-_POLL_INTERVAL = 0.5  # max added latency for subscribe()/unsubscribe()
+# ponytail: poll interval and backoff cap now in config.py
 
 
 async def start() -> None:
@@ -74,10 +74,12 @@ async def _supervisor() -> None:
                 # fmt: on
             backoff = 1
             while not _stopped:
-                async for notify in _conn.notifies(timeout=_POLL_INTERVAL):
+                async for notify in _conn.notifies(timeout=settings.sse_poll_interval_seconds):
+                    from omniagent.constants import NotifyType
+
                     for q in list(_subscribers.get(notify.channel, ())):
-                        q.put_nowait(notify.payload or "update")
-                # notifies() returns after _POLL_INTERVAL of silence, which
+                        q.put_nowait(notify.payload or NotifyType.UPDATE)
+                # notifies() returns after poll interval of silence, which
                 # releases the connection's lock -- safe to execute() here.
                 while not _pending.empty():
                     action, channel, done = _pending.get_nowait()
@@ -92,7 +94,7 @@ async def _supervisor() -> None:
         except Exception:
             logger.exception("sse_hub: listener connection lost, reconnecting in %ds", backoff)
             await asyncio.sleep(backoff)
-            backoff = min(backoff * 2, 30)
+            backoff = min(backoff * 2, settings.sse_reconnect_max_backoff_seconds)
 
 
 async def _listen_action(action: str, channel: str) -> None:

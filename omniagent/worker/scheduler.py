@@ -7,7 +7,15 @@ from datetime import UTC, datetime
 
 from pydantic import BaseModel
 
+from omniagent.config import settings
 from omniagent.worker.job import app
+from omniagent.worker.queries import (
+    insert_session_from_schedule,
+    select_agent_latest_by_name,
+    select_schedule_active_session,
+    select_schedules_due,
+    update_schedule_fired,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -19,17 +27,18 @@ class _ScheduleRow(BaseModel):
     prompt: str
 
 
+TASK_NAME = "check_schedules"
+
+
 @app.periodic(cron="* * * * *")
-@app.task(name="check_schedules", queue="default")
+@app.task(name=TASK_NAME, queue=settings.worker_queue_name)
 async def check_schedules(timestamp: int) -> None:
     from croniter import croniter
 
     from omniagent.db import get_conn
 
     async with get_conn() as conn:
-        rows = await conn.execute(
-            "SELECT id, agent_name, cron_expr, prompt FROM schedules WHERE enabled = TRUE AND (next_run_at IS NULL OR next_run_at <= NOW())"
-        )
+        rows = await conn.execute(select_schedules_due)
         schedules = [_ScheduleRow.model_validate(dict(r)) for r in await rows.fetchall()]
 
     for sched in schedules:
@@ -42,7 +51,7 @@ async def check_schedules(timestamp: int) -> None:
 
             async with get_conn() as conn:
                 await conn.execute(
-                    "UPDATE schedules SET last_run_at=NOW(), next_run_at=%s, updated_at=NOW() WHERE id=%s",
+                    update_schedule_fired,  # pyright: ignore[reportArgumentType]
                     (next_run, sched.id),
                 )
             logger.info("schedule %s fired, next=%s", sched.id, next_run.isoformat())
@@ -55,7 +64,7 @@ async def _fire_schedule(sched: _ScheduleRow) -> None:
 
     async with get_conn() as conn:
         rows = await conn.execute(
-            "SELECT name, version, toolbox_refs, tool_refs FROM agents WHERE name = %s ORDER BY created_at DESC LIMIT 1",
+            select_agent_latest_by_name,  # pyright: ignore[reportArgumentType]
             (sched.agent_name,),
         )
         agent = await rows.fetchone()
@@ -64,7 +73,7 @@ async def _fire_schedule(sched: _ScheduleRow) -> None:
 
         active = await (
             await conn.execute(
-                "SELECT id FROM sessions WHERE schedule_id=%s AND status IN ('pending','running') LIMIT 1",
+                select_schedule_active_session,  # pyright: ignore[reportArgumentType]
                 (sched.id,),
             )
         ).fetchone()
@@ -76,8 +85,7 @@ async def _fire_schedule(sched: _ScheduleRow) -> None:
         messages = [{"role": "user", "content": sched.prompt, "timestamp": now}]
 
         rows = await conn.execute(
-            """INSERT INTO sessions (agent_name, agent_version, toolbox_versions, tool_refs, status, messages, schedule_id, is_scheduled)
-               VALUES (%s, %s, %s, %s, 'pending', %s, %s, TRUE) RETURNING id""",
+            insert_session_from_schedule,  # pyright: ignore[reportArgumentType]
             (
                 agent["name"],
                 agent["version"],
@@ -93,7 +101,7 @@ async def _fire_schedule(sched: _ScheduleRow) -> None:
 
     from omniagent.worker.job import run_agent_job
 
-    await run_agent_job.configure(queue="default").defer_async(
+    await run_agent_job.configure(queue=settings.worker_queue_name).defer_async(
         session_id=session_id,
     )
     logger.info("schedule %s: created session %s", sched.id, session_id)

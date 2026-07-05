@@ -16,6 +16,7 @@ from procrastinate import PsycopgConnector
 
 from omniagent.api.models import MessageRecord
 from omniagent.config import settings
+from omniagent.constants import EventType, HarnessName, SessionStatus
 from omniagent.db import get_conn
 from omniagent.logging_config import trace_id_var
 from omniagent.worker.config import _fetch_session_config
@@ -24,6 +25,12 @@ from omniagent.worker.lifecycle import _complete_session, _handle_defer
 from omniagent.worker.models import BaseEvent, ErrorEvent, SystemPromptEvent
 from omniagent.worker.native import NATIVE_TOOL_DESCRIPTIONS, DeferInfo
 from omniagent.worker.prompts import _build_system_prompt, _make_native_tool_snapshot
+from omniagent.worker.queries import (
+    select_session_for_update,
+    select_session_langfuse_trace,
+    update_session_langfuse_trace,
+    update_session_set_status_running,
+)
 from omniagent.worker.tools import NativeToolContext, NativeToolExecutor
 
 logger = logging.getLogger(__name__)
@@ -53,29 +60,33 @@ _langfuse = Langfuse() if settings.langfuse_secret_key else None
 
 app = procrastinate.App(connector=PsycopgConnector(conninfo=settings.database_url))
 
+TASK_NAME = "run_agent_job"
 
-@app.task(name="run_agent_job", queue="default")
+
+@app.task(name=TASK_NAME, queue=settings.worker_queue_name)
 async def run_agent_job(session_id: str) -> None:
     trace_id_var.set(session_id)
     job_start = time.monotonic()
 
     async with get_conn() as conn:
         row = await (
-            await conn.execute("SELECT status, messages FROM sessions WHERE id=%s", (session_id,))
+            await conn.execute(
+                select_session_for_update, (session_id,)
+            )  # pyright: ignore[reportArgumentType]
         ).fetchone()
         if not row:
             logger.warning("run_agent_job: session %s not found, skipping", session_id)
             return
-        if row["status"] == "cancelled":
+        if row["status"] == SessionStatus.CANCELLED:
             logger.info("run_agent_job: session %s cancelled, skipping", session_id)
             return
         history = [MessageRecord.model_validate(m) for m in (row["messages"] or [])]
-        if row["status"] in ("pending", "deferred"):
+        if row["status"] in (SessionStatus.PENDING, SessionStatus.DEFERRED):
             await conn.execute(
-                "UPDATE sessions SET status='running', updated_at=NOW() WHERE id=%s",
+                update_session_set_status_running,  # pyright: ignore[reportArgumentType]
                 (session_id,),
             )
-            await _emit_event(session_id, BaseEvent(type="running"))
+            await _emit_event(session_id, BaseEvent(type=EventType.RUNNING))
 
     config = await _fetch_session_config(session_id)
     harness = config.harness
@@ -143,7 +154,7 @@ async def run_agent_job(session_id: str) -> None:
         try:
             async with get_conn() as conn:
                 rows = await conn.execute(
-                    "SELECT langfuse_trace_id FROM sessions WHERE id = %s",
+                    select_session_langfuse_trace,  # pyright: ignore[reportArgumentType]
                     (session_id,),
                 )
                 row = await rows.fetchone()
@@ -184,7 +195,7 @@ async def run_agent_job(session_id: str) -> None:
                     if _actual_id:
                         async with get_conn() as conn:
                             await conn.execute(
-                                "UPDATE sessions SET langfuse_trace_id = %s WHERE id = %s",
+                                update_session_langfuse_trace,  # pyright: ignore[reportArgumentType]
                                 (_actual_id, session_id),
                             )
                 except Exception:
@@ -219,14 +230,14 @@ async def run_agent_job(session_id: str) -> None:
                         _warning=f"langfuse {name} span failed",
                     )
 
-                if harness == "antigravity":
+                if harness == HarnessName.ANTIGRAVITY:
                     from omniagent.worker.harness.antigravity import AntigravityAdapter
 
                     adapter = AntigravityAdapter(
                         api_key=settings.antigravity_api_key or None,
                         _lf_start_span=_mk_lf_span,
                     )
-                elif harness == "claude":
+                elif harness == HarnessName.CLAUDE:
                     from omniagent.worker.harness.claude import ClaudeAdapter
 
                     adapter = ClaudeAdapter(_lf_start_span=_mk_lf_span)
@@ -270,7 +281,7 @@ async def run_agent_job(session_id: str) -> None:
 
                 if defer := _defer_state.get("info"):
                     await _handle_defer(session_id, result, history, defer)
-                    outcome = "deferred"
+                    outcome = SessionStatus.DEFERRED
                 else:
                     await _complete_session(session_id, result, len(history))
                     outcome = "completed"

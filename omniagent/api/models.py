@@ -8,6 +8,8 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from omniagent.constants import NotifyType
+
 # ── Tools ──────────────────────────────────────────────────────────────────
 
 
@@ -190,7 +192,7 @@ class SessionResultRequest(BaseModel):
 
 
 class SessionCompletePayload(BaseModel):
-    type: str = "complete"
+    type: str = NotifyType.COMPLETE
     result: str
 
 

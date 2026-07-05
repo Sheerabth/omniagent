@@ -5,19 +5,29 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from omniagent.api.auth import require_scope
 from omniagent.api.models import AgentCreate, AgentRecord
+from omniagent.api.queries import (
+    delete_agent_by_name_version,
+    select_agent_by_name_version,
+    select_agent_versions,
+    select_all_agents,
+    select_tool_by_name,
+    select_toolbox_by_name_version,
+    upsert_agent,
+)
+from omniagent.constants import HarnessName
 from omniagent.db import DictConn, get_conn
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/agents", tags=["agents"])
 
-VALID_HARNESSES = {"claude", "antigravity"}
+VALID_HARNESSES = {h.value for h in HarnessName}
 
 
 async def _validate_toolbox_refs(conn: DictConn, toolbox_refs: dict[str, str]) -> None:
     for toolbox_name, toolbox_version in toolbox_refs.items():
         rows = await conn.execute(
-            "SELECT id FROM toolboxes WHERE name = %s AND version = %s",
+            select_toolbox_by_name_version,
             (toolbox_name, toolbox_version),
         )
         if not await rows.fetchone():
@@ -26,7 +36,7 @@ async def _validate_toolbox_refs(conn: DictConn, toolbox_refs: dict[str, str]) -
 
 async def _validate_tool_refs(conn: DictConn, tool_refs: list[str]) -> None:
     for tool_name in tool_refs:
-        rows = await conn.execute("SELECT name FROM tools WHERE name = %s", (tool_name,))
+        rows = await conn.execute(select_tool_by_name, (tool_name,))
         if not await rows.fetchone():
             raise HTTPException(400, detail=f"Tool not found: {tool_name}")
 
@@ -39,19 +49,7 @@ async def create_agent(body: AgentCreate, _=Depends(require_scope("agents:write"
         await _validate_toolbox_refs(conn, body.toolbox_refs)
         await _validate_tool_refs(conn, body.tool_refs)
         rows = await conn.execute(
-            """
-            INSERT INTO agents (name, version, harness, model, toolbox_refs, tool_refs, system_prompt, use_monty)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (name, version) DO UPDATE
-              SET harness       = EXCLUDED.harness,
-                  model         = EXCLUDED.model,
-                  toolbox_refs  = EXCLUDED.toolbox_refs,
-                  tool_refs     = EXCLUDED.tool_refs,
-                  system_prompt = EXCLUDED.system_prompt,
-                  use_monty     = EXCLUDED.use_monty,
-                  updated_at    = NOW()
-            RETURNING *
-            """,
+            upsert_agent,
             (
                 body.name,
                 body.version,
@@ -71,7 +69,7 @@ async def create_agent(body: AgentCreate, _=Depends(require_scope("agents:write"
 @router.get("", response_model=list[AgentRecord])
 async def list_agents(_=Depends(require_scope("agents:read"))) -> list[AgentRecord]:
     async with get_conn() as conn:
-        rows = await conn.execute("SELECT * FROM agents ORDER BY name, created_at")
+        rows = await conn.execute(select_all_agents)
         return [AgentRecord.model_validate(dict(r)) for r in await rows.fetchall()]
 
 
@@ -80,9 +78,7 @@ async def list_agent_versions(
     name: str, _=Depends(require_scope("agents:read"))
 ) -> list[AgentRecord]:
     async with get_conn() as conn:
-        rows = await conn.execute(
-            "SELECT * FROM agents WHERE name = %s ORDER BY created_at", (name,)
-        )
+        rows = await conn.execute(select_agent_versions, (name,))
         results = await rows.fetchall()
     if not results:
         raise HTTPException(404)
@@ -94,9 +90,7 @@ async def get_agent(
     name: str, version: str, _=Depends(require_scope("agents:read"))
 ) -> AgentRecord:
     async with get_conn() as conn:
-        rows = await conn.execute(
-            "SELECT * FROM agents WHERE name = %s AND version = %s", (name, version)
-        )
+        rows = await conn.execute(select_agent_by_name_version, (name, version))
         row = await rows.fetchone()
     if not row:
         raise HTTPException(404)
@@ -106,4 +100,4 @@ async def get_agent(
 @router.delete("/{name}/{version}", status_code=204)
 async def delete_agent(name: str, version: str, _=Depends(require_scope("agents:write"))) -> None:
     async with get_conn() as conn:
-        await conn.execute("DELETE FROM agents WHERE name = %s AND version = %s", (name, version))
+        await conn.execute(delete_agent_by_name_version, (name, version))

@@ -7,6 +7,14 @@ from pydantic import BaseModel
 from omniagent.api.auth import require_scope
 from omniagent.api.models import ToolRecord
 from omniagent.api.openapi import parse_spec
+from omniagent.api.queries import (
+    delete_tool_by_name,
+    delete_tools_by_namespace,
+    select_all_tools,
+    select_tools_by_namespace,
+    update_tool_timeout,
+    upsert_tool,
+)
 from omniagent.db import get_conn
 
 router = APIRouter(prefix="/tools", tags=["tools"])
@@ -41,23 +49,7 @@ async def import_openapi(
     async with get_conn() as conn, conn.transaction():
         for t in tools:
             await conn.execute(
-                """
-                    INSERT INTO tools
-                      (name, namespace, description, input_schema, output_schema,
-                       openapi_method, openapi_path, openapi_base_url, openapi_security, timeout)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (name) DO UPDATE
-                      SET namespace        = EXCLUDED.namespace,
-                          description      = EXCLUDED.description,
-                          input_schema     = EXCLUDED.input_schema,
-                          output_schema    = EXCLUDED.output_schema,
-                          openapi_method   = EXCLUDED.openapi_method,
-                          openapi_path     = EXCLUDED.openapi_path,
-                          openapi_base_url = EXCLUDED.openapi_base_url,
-                          openapi_security = EXCLUDED.openapi_security,
-                          timeout          = EXCLUDED.timeout,
-                          updated_at       = NOW()
-                    """,
+                upsert_tool,
                 (
                     t.name,
                     body.namespace,
@@ -84,10 +76,7 @@ async def patch_tool(
     name: str, body: PatchToolRequest, _=Depends(require_scope("tools:write"))
 ) -> dict:
     async with get_conn() as conn:
-        result = await conn.execute(
-            "UPDATE tools SET timeout = %s, updated_at = NOW() WHERE name = %s",
-            (body.timeout, name),
-        )
+        result = await conn.execute(update_tool_timeout, (body.timeout, name))
         if result.rowcount == 0:
             raise HTTPException(404, detail=f"Tool {name!r} not found")
     return {"name": name, "timeout": body.timeout}
@@ -96,7 +85,7 @@ async def patch_tool(
 @router.delete("/{name}", status_code=204)
 async def delete_tool(name: str, _=Depends(require_scope("tools:write"))) -> None:
     async with get_conn() as conn:
-        result = await conn.execute("DELETE FROM tools WHERE name = %s", (name,))
+        result = await conn.execute(delete_tool_by_name, (name,))
         if result.rowcount == 0:
             raise HTTPException(404, detail=f"Tool {name!r} not found")
 
@@ -104,13 +93,13 @@ async def delete_tool(name: str, _=Depends(require_scope("tools:write"))) -> Non
 @router.delete("/namespace/{namespace}", status_code=204)
 async def delete_namespace(namespace: str, _=Depends(require_scope("tools:write"))) -> None:
     async with get_conn() as conn:
-        await conn.execute("DELETE FROM tools WHERE namespace = %s", (namespace,))
+        await conn.execute(delete_tools_by_namespace, (namespace,))
 
 
 @router.get("", response_model=list[ToolRecord])
 async def list_tools(_=Depends(require_scope("tools:read"))) -> list[ToolRecord]:
     async with get_conn() as conn:
-        rows = await conn.execute("SELECT * FROM tools ORDER BY name")
+        rows = await conn.execute(select_all_tools)
         return [ToolRecord.model_validate(dict(r)) for r in await rows.fetchall()]
 
 
@@ -120,7 +109,7 @@ async def list_tools_by_namespace(
 ) -> list[ToolRecord]:
     async with get_conn() as conn:
         rows = await conn.execute(
-            "SELECT * FROM tools WHERE namespace = %s ORDER BY name",
+            select_tools_by_namespace,
             (namespace,),
         )
         return [ToolRecord.model_validate(dict(r)) for r in await rows.fetchall()]

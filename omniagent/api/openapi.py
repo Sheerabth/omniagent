@@ -7,6 +7,21 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from omniagent.constants import (
+    APPLICATION_JSON,
+    SEC_TYPE_API_KEY,
+    SEC_TYPE_BASIC,
+    SEC_TYPE_BEARER,
+    SEC_TYPE_OAUTH2,
+    SEC_TYPE_OIDC,
+    TOKEN_KEY_CLIENT_ID,
+    TOKEN_KEY_CLIENT_SECRET,
+    TOKEN_KEY_REFRESH_TOKEN,
+)
+
+_X_PARAM_IN = "x-param-in"
+_OAUTH_FLOW_AUTH_CODE = "authorizationCode"
+
 
 class ParsedTool(BaseModel):
     name: str
@@ -78,17 +93,17 @@ def _resolve_security(sec_reqs: list, resolved_schemes: dict) -> dict | None:
     scheme = resolved_schemes.get(scheme_name, {})
     stype = scheme.get("type", "")
     if stype == "http":
-        if scheme.get("scheme", "bearer").lower() == "basic":
+        if scheme.get("scheme", SEC_TYPE_BEARER).lower() == SEC_TYPE_BASIC:
             return {
-                "type": "basic",
+                "type": SEC_TYPE_BASIC,
                 "scheme_name": scheme_name,
                 "username_key": "username",
                 "password_key": "password",
             }
-        return {"type": "bearer", "scheme_name": scheme_name, "token_key": "token"}
+        return {"type": SEC_TYPE_BEARER, "scheme_name": scheme_name, "token_key": "token"}
     if stype == "apiKey":
         return {
-            "type": "apiKey",
+            "type": SEC_TYPE_API_KEY,
             "scheme_name": scheme_name,
             "in": scheme.get("in", "header"),
             "name": scheme.get("name", "X-Api-Key"),
@@ -100,15 +115,15 @@ def _resolve_security(sec_reqs: list, resolved_schemes: dict) -> dict | None:
         for flow_name, flow in scheme.get("flows", {}).items():
             if not token_url:
                 token_url = flow.get("tokenUrl", "")
-            if flow_name == "authorizationCode" and not authorization_url:
+            if flow_name == _OAUTH_FLOW_AUTH_CODE and not authorization_url:
                 authorization_url = flow.get("authorizationUrl", "")
         result: dict[str, Any] = {
-            "type": "oauth2",
+            "type": SEC_TYPE_OAUTH2,
             "scheme_name": scheme_name,
             "token_url": token_url,
-            "client_id_key": "client_id",
-            "client_secret_key": "client_secret",
-            "refresh_token_key": "refresh_token",
+            "client_id_key": TOKEN_KEY_CLIENT_ID,
+            "client_secret_key": TOKEN_KEY_CLIENT_SECRET,
+            "refresh_token_key": TOKEN_KEY_REFRESH_TOKEN,
             "scopes": list(sec_reqs[0].get(scheme_name, [])),
         }
         if authorization_url:
@@ -116,12 +131,12 @@ def _resolve_security(sec_reqs: list, resolved_schemes: dict) -> dict | None:
         return result
     if stype == "openIdConnect":
         return {
-            "type": "oidc",
+            "type": SEC_TYPE_OIDC,
             "scheme_name": scheme_name,
             "openid_connect_url": scheme.get("openIdConnectUrl", ""),
-            "client_id_key": "client_id",
-            "client_secret_key": "client_secret",
-            "refresh_token_key": "refresh_token",
+            "client_id_key": TOKEN_KEY_CLIENT_ID,
+            "client_secret_key": TOKEN_KEY_CLIENT_SECRET,
+            "refresh_token_key": TOKEN_KEY_REFRESH_TOKEN,
             "scopes": list(sec_reqs[0].get(scheme_name, [])),
         }
     return None
@@ -177,7 +192,7 @@ def parse_spec(spec: dict, namespace: str, base_url: str | None = None) -> list[
                 pschema = _flatten(param.get("schema", {"type": "string"}))
                 if param.get("description"):
                     pschema = {**pschema, "description": param["description"]}
-                pschema["x-param-in"] = param.get("in", "query")
+                pschema[_X_PARAM_IN] = param.get("in", "query")
                 properties[pname] = pschema
                 if param.get("required") or param.get("in") == "path":
                     required.append(pname)
@@ -187,7 +202,7 @@ def parse_spec(spec: dict, namespace: str, base_url: str | None = None) -> list[
                 content = rb.get("content", {})
                 rb_schema = _flatten(
                     content.get(
-                        "application/json",
+                        APPLICATION_JSON,
                         content.get(
                             "multipart/form-data",
                             content.get("application/x-www-form-urlencoded", {}),
@@ -196,7 +211,7 @@ def parse_spec(spec: dict, namespace: str, base_url: str | None = None) -> list[
                 )
                 for prop_name, prop_schema in rb_schema.get("properties", {}).items():
                     tagged = dict(prop_schema)
-                    tagged["x-param-in"] = "body"
+                    tagged[_X_PARAM_IN] = "body"
                     properties[prop_name] = tagged
                 required.extend(rb_schema.get("required", []))
 
@@ -209,7 +224,7 @@ def parse_spec(spec: dict, namespace: str, base_url: str | None = None) -> list[
                 (responses[c] for c in ("200", "201", "202", "204") if c in responses), {}
             )
             output_schema = _flatten(
-                success_resp.get("content", {}).get("application/json", {}).get("schema", {})
+                success_resp.get("content", {}).get(APPLICATION_JSON, {}).get("schema", {})
             )
 
             sec_reqs = op.get("security") if "security" in op else global_security

@@ -22,9 +22,13 @@ async def main() -> None:
     await init_pool()
 
     concurrency = settings.worker_concurrency
-    logger.info("Worker starting, polling queue 'default', concurrency=%d", concurrency)
+    logger.info(
+        "Worker starting, polling queue '%s', concurrency=%d",
+        settings.worker_queue_name,
+        concurrency,
+    )
     async with app.open_async():
-        worker = Worker(app, queues=["default"], concurrency=concurrency)
+        worker = Worker(app, queues=[settings.worker_queue_name], concurrency=concurrency)
         await worker.run()
 
     await close_pool()

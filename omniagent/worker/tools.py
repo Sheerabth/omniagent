@@ -11,14 +11,42 @@ from urllib.parse import quote
 from pydantic import BaseModel
 
 from omniagent.config import settings
+from omniagent.constants import (
+    APPLICATION_JSON,
+    AUTH_HEADER,
+    COOKIE,
+    SEC_TYPE_API_KEY,
+    SEC_TYPE_BASIC,
+    SEC_TYPE_BEARER,
+    SEC_TYPE_OAUTH2,
+    SEC_TYPE_OIDC,
+)
 from omniagent.db import get_conn
 from omniagent.worker.auth import _get_oauth_token, _get_oidc_token
 from omniagent.worker.http import _get_http_client
 from omniagent.worker.models import EventEmitter, ToolCallEvent, ToolResultEvent, ToolSnapshot
 from omniagent.worker.native import NATIVE_TOOL_DESCRIPTIONS, DeferInfo
+from omniagent.worker.queries import (
+    cancel_sessions_for_schedule,
+    delete_agent_memory,
+    delete_schedule_by_id_and_agent,
+    insert_schedule,
+    select_memory_by_key,
+    select_memory_keys_by_agent,
+    select_schedule_by_id_and_agent,
+    select_schedules_by_agent,
+    update_schedule_by_id_and_agent,
+    upsert_agent_memory,
+)
 
 logger = logging.getLogger(__name__)
 
+_SKILL_NAME = "native"
+_X_PARAM_IN = "x-param-in"
+_PARAM_IN_BODY = "body"
+_PARAM_IN_QUERY = "query"
+_PARAM_IN_HEADER = "header"
+_PARAM_IN_COOKIE = "cookie"
 _DEFAULT_TOOL_TIMEOUT = settings.tool_execution_timeout
 
 
@@ -49,14 +77,14 @@ async def _tool_executor(
     header_params: dict[str, str] = {}
     cookie_params: dict[str, str] = {}
     for k, v in remaining.items():
-        loc = props.get(k, {}).get("x-param-in")
-        if loc == "body":
+        loc = props.get(k, {}).get(_X_PARAM_IN)
+        if loc == _PARAM_IN_BODY:
             body_params[k] = v
-        elif loc == "query":
+        elif loc == _PARAM_IN_QUERY:
             query_params[k] = v
-        elif loc == "header":
+        elif loc == _PARAM_IN_HEADER:
             header_params[k] = str(v)
-        elif loc == "cookie":
+        elif loc == _PARAM_IN_COOKIE:
             cookie_params[k] = str(v)
         else:
             # no annotation — fall back to method-based (tools imported before this change)
@@ -71,23 +99,23 @@ async def _tool_executor(
     sec = tool.openapi_security
     if sec and auth_context:
         try:
-            if sec["type"] == "bearer":
-                headers["Authorization"] = f"Bearer {auth_context[sec['token_key']]}"
-            elif sec["type"] == "apiKey" and sec["in"] == "header":
+            if sec["type"] == SEC_TYPE_BEARER:
+                headers[AUTH_HEADER] = f"Bearer {auth_context[sec['token_key']]}"
+            elif sec["type"] == SEC_TYPE_API_KEY and sec["in"] == "header":
                 headers[sec["name"]] = auth_context[sec["token_key"]]
-            elif sec["type"] == "apiKey" and sec["in"] == "query":
+            elif sec["type"] == SEC_TYPE_API_KEY and sec["in"] == "query":
                 params = {**(params or {}), sec["name"]: auth_context[sec["token_key"]]}
-            elif sec["type"] == "apiKey" and sec["in"] == "cookie":
-                headers["Cookie"] = f"{sec['name']}={auth_context[sec['token_key']]}"
-            elif sec["type"] == "basic":
+            elif sec["type"] == SEC_TYPE_API_KEY and sec["in"] == "cookie":
+                headers[COOKIE] = f"{sec['name']}={auth_context[sec['token_key']]}"
+            elif sec["type"] == SEC_TYPE_BASIC:
                 creds = base64.b64encode(
                     f"{auth_context[sec['username_key']]}:{auth_context[sec['password_key']]}".encode()
                 ).decode()
-                headers["Authorization"] = f"Basic {creds}"
-            elif sec["type"] == "oauth2":
-                headers["Authorization"] = f"Bearer {await _get_oauth_token(sec, auth_context)}"
-            elif sec["type"] == "oidc":
-                headers["Authorization"] = f"Bearer {await _get_oidc_token(sec, auth_context)}"
+                headers[AUTH_HEADER] = f"Basic {creds}"
+            elif sec["type"] == SEC_TYPE_OAUTH2:
+                headers[AUTH_HEADER] = f"Bearer {await _get_oauth_token(sec, auth_context)}"
+            elif sec["type"] == SEC_TYPE_OIDC:
+                headers[AUTH_HEADER] = f"Bearer {await _get_oidc_token(sec, auth_context)}"
             else:
                 raise RuntimeError(f"unknown security type: {sec['type']!r}")
         except KeyError as e:
@@ -107,7 +135,7 @@ async def _tool_executor(
         resp.raise_for_status()
     if (
         not resp.content
-        or resp.headers.get("content-type", "").split(";")[0].strip() != "application/json"
+        or resp.headers.get("content-type", "").split(";")[0].strip() != APPLICATION_JSON
     ):
         return {"status": resp.status_code, "body": resp.text or None}
     return resp.json()
@@ -193,12 +221,12 @@ class NativeToolExecutor:
                 tool="native.memory_get",
                 input=input_data,
                 harness=self._ctx.harness,
-                skill_name="native",
+                skill_name=_SKILL_NAME,
             ),
         )
         async with get_conn() as conn:
             rows = await conn.execute(
-                "SELECT value FROM agent_memory WHERE agent_name=%s AND key=%s",
+                select_memory_by_key,  # pyright: ignore[reportArgumentType]
                 (self._ctx.agent_name, input_data["key"]),
             )
             row = await rows.fetchone()
@@ -210,7 +238,7 @@ class NativeToolExecutor:
                 input=input_data,
                 output=result,
                 harness=self._ctx.harness,
-                skill_name="native",
+                skill_name=_SKILL_NAME,
             ),
         )
         return result
@@ -221,14 +249,12 @@ class NativeToolExecutor:
                 tool="native.memory_set",
                 input=input_data,
                 harness=self._ctx.harness,
-                skill_name="native",
+                skill_name=_SKILL_NAME,
             ),
         )
         async with get_conn() as conn:
             await conn.execute(
-                """INSERT INTO agent_memory (agent_name, key, value, updated_at)
-                   VALUES (%s, %s, %s, NOW())
-                   ON CONFLICT (agent_name, key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()""",
+                upsert_agent_memory,  # pyright: ignore[reportArgumentType]
                 (self._ctx.agent_name, input_data["key"], json.dumps(input_data["value"])),
             )
             result = {"ok": True}
@@ -239,7 +265,7 @@ class NativeToolExecutor:
                 input=input_data,
                 output=result,
                 harness=self._ctx.harness,
-                skill_name="native",
+                skill_name=_SKILL_NAME,
             ),
         )
         return result
@@ -250,12 +276,12 @@ class NativeToolExecutor:
                 tool="native.memory_delete",
                 input=input_data,
                 harness=self._ctx.harness,
-                skill_name="native",
+                skill_name=_SKILL_NAME,
             ),
         )
         async with get_conn() as conn:
             await conn.execute(
-                "DELETE FROM agent_memory WHERE agent_name=%s AND key=%s",
+                delete_agent_memory,  # pyright: ignore[reportArgumentType]
                 (self._ctx.agent_name, input_data["key"]),
             )
             result = {"ok": True}
@@ -266,7 +292,7 @@ class NativeToolExecutor:
                 input=input_data,
                 output=result,
                 harness=self._ctx.harness,
-                skill_name="native",
+                skill_name=_SKILL_NAME,
             ),
         )
         return result
@@ -277,12 +303,12 @@ class NativeToolExecutor:
                 tool="native.memory_list",
                 input=input_data,
                 harness=self._ctx.harness,
-                skill_name="native",
+                skill_name=_SKILL_NAME,
             ),
         )
         async with get_conn() as conn:
             rows = await conn.execute(
-                "SELECT key FROM agent_memory WHERE agent_name=%s ORDER BY key",
+                select_memory_keys_by_agent,  # pyright: ignore[reportArgumentType]
                 (self._ctx.agent_name,),
             )
             result = {"keys": [r["key"] for r in await rows.fetchall()]}
@@ -293,7 +319,7 @@ class NativeToolExecutor:
                 input=input_data,
                 output=result,
                 harness=self._ctx.harness,
-                skill_name="native",
+                skill_name=_SKILL_NAME,
             ),
         )
         return result
@@ -306,12 +332,12 @@ class NativeToolExecutor:
                 tool="native.schedule_list",
                 input=input_data,
                 harness=self._ctx.harness,
-                skill_name="native",
+                skill_name=_SKILL_NAME,
             ),
         )
         async with get_conn() as conn:
             rows = await conn.execute(
-                "SELECT * FROM schedules WHERE agent_name=%s ORDER BY created_at DESC",
+                select_schedules_by_agent,  # pyright: ignore[reportArgumentType]
                 (self._ctx.agent_name,),
             )
             from omniagent.api.models import ScheduleRecord
@@ -334,7 +360,7 @@ class NativeToolExecutor:
                 input=input_data,
                 output=result,
                 harness=self._ctx.harness,
-                skill_name="native",
+                skill_name=_SKILL_NAME,
             ),
         )
         return result
@@ -355,13 +381,12 @@ class NativeToolExecutor:
                 tool="native.schedule_create",
                 input=input_data,
                 harness=self._ctx.harness,
-                skill_name="native",
+                skill_name=_SKILL_NAME,
             ),
         )
         async with get_conn() as conn:
             rows = await conn.execute(
-                """INSERT INTO schedules (agent_name, cron_expr, prompt, next_run_at)
-                   VALUES (%s, %s, %s, %s) RETURNING id""",
+                insert_schedule,  # pyright: ignore[reportArgumentType]
                 (self._ctx.agent_name, cron_expr, prompt, next_run),
             )
             schedule_row = await rows.fetchone()
@@ -375,7 +400,7 @@ class NativeToolExecutor:
                 input=input_data,
                 output=result,
                 harness=self._ctx.harness,
-                skill_name="native",
+                skill_name=_SKILL_NAME,
             ),
         )
         return result
@@ -392,13 +417,13 @@ class NativeToolExecutor:
                 tool="native.schedule_update",
                 input=input_data,
                 harness=self._ctx.harness,
-                skill_name="native",
+                skill_name=_SKILL_NAME,
             ),
         )
         async with get_conn() as conn:
             row = await (
                 await conn.execute(
-                    "SELECT cron_expr, prompt FROM schedules WHERE id=%s AND agent_name=%s",
+                    select_schedule_by_id_and_agent,  # pyright: ignore[reportArgumentType]
                     (schedule_id, self._ctx.agent_name),
                 )
             ).fetchone()
@@ -412,7 +437,7 @@ class NativeToolExecutor:
             except Exception as exc:
                 raise RuntimeError(f"invalid cron_expr {new_cron!r}: {exc}") from exc
             await conn.execute(
-                "UPDATE schedules SET cron_expr=%s, prompt=%s, next_run_at=%s WHERE id=%s AND agent_name=%s",
+                update_schedule_by_id_and_agent,  # pyright: ignore[reportArgumentType]
                 (new_cron, new_prompt, next_run, schedule_id, self._ctx.agent_name),
             )
         result = {
@@ -427,7 +452,7 @@ class NativeToolExecutor:
                 input=input_data,
                 output=result,
                 harness=self._ctx.harness,
-                skill_name="native",
+                skill_name=_SKILL_NAME,
             ),
         )
         return result
@@ -439,16 +464,16 @@ class NativeToolExecutor:
                 tool="native.schedule_delete",
                 input=input_data,
                 harness=self._ctx.harness,
-                skill_name="native",
+                skill_name=_SKILL_NAME,
             ),
         )
         async with get_conn() as conn, conn.transaction():
             await conn.execute(
-                "UPDATE sessions SET status='cancelled', updated_at=NOW() WHERE schedule_id=%s AND status='pending'",
+                cancel_sessions_for_schedule,  # pyright: ignore[reportArgumentType]
                 (schedule_id,),
             )
             res = await conn.execute(
-                "DELETE FROM schedules WHERE id=%s AND agent_name=%s",
+                delete_schedule_by_id_and_agent,  # pyright: ignore[reportArgumentType]
                 (schedule_id, self._ctx.agent_name),
             )
             if res.rowcount == 0:
@@ -461,7 +486,7 @@ class NativeToolExecutor:
                 input=input_data,
                 output=result,
                 harness=self._ctx.harness,
-                skill_name="native",
+                skill_name=_SKILL_NAME,
             ),
         )
         return result
@@ -477,7 +502,7 @@ class NativeToolExecutor:
                 tool="native.defer_turn",
                 input=input_data,
                 harness=self._ctx.harness,
-                skill_name="native",
+                skill_name=_SKILL_NAME,
             ),
         )
         result = {"status": "deferred", "resume_in_seconds": delay}
@@ -488,7 +513,7 @@ class NativeToolExecutor:
                 input=input_data,
                 output=result,
                 harness=self._ctx.harness,
-                skill_name="native",
+                skill_name=_SKILL_NAME,
             ),
         )
         return result
@@ -506,7 +531,7 @@ class NativeToolExecutor:
                 tool="native.defer_turn_until",
                 input=input_data,
                 harness=self._ctx.harness,
-                skill_name="native",
+                skill_name=_SKILL_NAME,
             ),
         )
         result = {"status": "deferred", "resume_at": ts.isoformat()}
@@ -517,7 +542,7 @@ class NativeToolExecutor:
                 input=input_data,
                 output=result,
                 harness=self._ctx.harness,
-                skill_name="native",
+                skill_name=_SKILL_NAME,
             ),
         )
         return result

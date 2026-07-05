@@ -4,6 +4,12 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from omniagent.api.auth import require_scope
 from omniagent.api.models import VALID_SCOPES, ApiKeyCreate, ApiKeyRecord, ApiKeyResponse
+from omniagent.api.queries import (
+    delete_api_key_returning,
+    insert_api_key_returning,
+    select_api_key_by_id,
+    select_non_ui_api_keys,
+)
 from omniagent.api.secrets import generate_key, hash_key
 from omniagent.db import get_conn
 
@@ -25,7 +31,7 @@ async def create_api_key(
     key_prefix = key[:8]
     async with get_conn() as conn:
         rows = await conn.execute(
-            "INSERT INTO api_keys (name, key_hash, key_prefix, scopes) VALUES (%s, %s, %s, %s) RETURNING id, name, scopes, created_at",
+            insert_api_key_returning,
             (body.name, key_hash, key_prefix, body.scopes),
         )
         row = await rows.fetchone()
@@ -42,26 +48,17 @@ async def create_api_key(
 @router.get("/api-keys", response_model=list[ApiKeyRecord])
 async def list_api_keys(_=Depends(require_scope("keys:manage"))) -> list[ApiKeyRecord]:
     async with get_conn() as conn:
-        rows = await conn.execute(
-            "SELECT id, name, scopes, created_at FROM api_keys WHERE name != '_built-in-ui' ORDER BY created_at"
-        )
+        rows = await conn.execute(select_non_ui_api_keys)
         return [ApiKeyRecord.model_validate(dict(r)) for r in await rows.fetchall()]
 
 
 @router.delete("/api-keys/{key_id}", status_code=204)
 async def delete_api_key(key_id: uuid.UUID, _=Depends(require_scope("keys:manage"))) -> None:
     async with get_conn() as conn:
-        row = await (
-            await conn.execute(
-                "DELETE FROM api_keys WHERE id = %s AND name != '_built-in-ui' RETURNING name",
-                (key_id,),
-            )
-        ).fetchone()
+        row = await (await conn.execute(delete_api_key_returning, (key_id,))).fetchone()
         if not row:
             # Distinguish 404 vs 403: check if it exists at all
-            exists = await (
-                await conn.execute("SELECT name FROM api_keys WHERE id = %s", (key_id,))
-            ).fetchone()
+            exists = await (await conn.execute(select_api_key_by_id, (key_id,))).fetchone()
             if not exists:
                 raise HTTPException(404)
             raise HTTPException(403, detail="Cannot delete built-in UI key")

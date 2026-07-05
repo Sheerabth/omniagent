@@ -4,6 +4,14 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from omniagent.api.auth import require_scope
 from omniagent.api.models import NamespaceAuthSet, NamespaceRecord, SchemeRecord
+from omniagent.api.queries import (
+    delete_namespace_auth,
+    select_namespace_auth_by_namespace_list,
+    select_namespace_auth_for_update,
+    select_namespaces_with_tool_count,
+    select_tool_count_by_namespace,
+    upsert_namespace_auth,
+)
 from omniagent.crypto import decrypt_auth_context, encrypt_auth_context
 from omniagent.db import get_conn
 
@@ -13,17 +21,13 @@ router = APIRouter(prefix="/namespaces", tags=["namespaces"])
 @router.get("", response_model=list[NamespaceRecord])
 async def list_namespaces(_=Depends(require_scope("auth:read"))) -> list[NamespaceRecord]:
     async with get_conn() as conn:
-        tool_rows = await (
-            await conn.execute(
-                "SELECT namespace, COUNT(*) AS tool_count FROM tools GROUP BY namespace ORDER BY namespace"
-            )
-        ).fetchall()
+        tool_rows = await (await conn.execute(select_namespaces_with_tool_count)).fetchall()
         if not tool_rows:
             return []
         namespaces = [r["namespace"] for r in tool_rows]
         auth_rows = await (
             await conn.execute(
-                "SELECT namespace, scheme_name, auth_context FROM namespace_auth WHERE namespace = ANY(%s)",
+                select_namespace_auth_by_namespace_list,
                 (namespaces,),
             )
         ).fetchall()
@@ -55,23 +59,20 @@ async def set_namespace_auth(
 ) -> SchemeRecord:
     async with get_conn() as conn:
         count_row = await (
-            await conn.execute("SELECT COUNT(*) AS c FROM tools WHERE namespace=%s", (namespace,))
+            await conn.execute(select_tool_count_by_namespace, (namespace,))
         ).fetchone()
         if not count_row or count_row["c"] == 0:
             raise HTTPException(404, "Namespace not found")
         existing_row = await (
             await conn.execute(
-                "SELECT auth_context FROM namespace_auth WHERE namespace=%s AND scheme_name=%s FOR UPDATE",
+                select_namespace_auth_for_update,
                 (namespace, scheme_name),
             )
         ).fetchone()
         existing = decrypt_auth_context(existing_row["auth_context"]) if existing_row else None
         merged = {**(existing or {}), **(body.auth_context or {})}
         await conn.execute(
-            """INSERT INTO namespace_auth (namespace, scheme_name, auth_context, updated_at)
-               VALUES (%s, %s, %s, NOW())
-               ON CONFLICT (namespace, scheme_name) DO UPDATE
-                 SET auth_context = EXCLUDED.auth_context, updated_at = NOW()""",
+            upsert_namespace_auth,
             (namespace, scheme_name, encrypt_auth_context(merged) if merged else None),
         )
         return SchemeRecord(
@@ -88,6 +89,6 @@ async def clear_namespace_auth(
 ) -> None:
     async with get_conn() as conn:
         await conn.execute(
-            "DELETE FROM namespace_auth WHERE namespace=%s AND scheme_name=%s",
+            delete_namespace_auth,
             (namespace, scheme_name),
         )

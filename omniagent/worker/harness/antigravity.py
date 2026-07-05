@@ -20,6 +20,7 @@ except ImportError as exc:
     ) from exc
 
 from omniagent.api.models import MessageRecord
+from omniagent.config import settings
 from omniagent.worker.harness._env import _load_env_file
 from omniagent.worker.harness.base import HarnessAdapter, make_monty_executor
 from omniagent.worker.models import (
@@ -32,25 +33,24 @@ from omniagent.worker.models import (
 
 logger = logging.getLogger(__name__)
 
+_DEFAULT_MODEL = "gemini-2.5-flash"
+
 # google-antigravity's subprocess.Popen inherits os.environ — no upstream
-# env override.  Replace with bare-minimum system vars.  Our worker settings
-# are cached in the `settings` singleton at module load; stripping everything
-# else is safe and keeps secrets out of the AI sandbox.
-_SANDBOX_ENV = frozenset(
-    {
-        "PATH",
-        "HOME",
-        "PWD",
-        "USER",
-        "SHELL",
-        "LANG",
-        "LC_ALL",
-        "LC_CTYPE",
-        "TZ",
-        "PYTHON_VERSION",
-        "PYTHON_SHA256",
-    }
-)
+# env override.  Replace with bare-minimum system vars listed in
+# settings.antigravity_sandbox_env_vars.  Our worker settings are cached in
+# the `settings` singleton at module load; stripping everything else is safe
+# and keeps secrets out of the AI sandbox.
+_SANDBOX_ENV: frozenset[str] | None = None
+
+
+def _get_sandbox_env() -> frozenset[str]:
+    """Lazily cache configured sandbox env var names."""
+    global _SANDBOX_ENV
+    if _SANDBOX_ENV is None:
+        _SANDBOX_ENV = frozenset(settings.antigravity_sandbox_env_vars)
+    assert _SANDBOX_ENV is not None  # narrow for pyright
+    return _SANDBOX_ENV
+
 
 _TYPE_MAP = {"string": str, "integer": int, "number": float, "boolean": bool}
 
@@ -64,8 +64,8 @@ _antigravity_env_ctx: ContextVar[dict[str, str] | None] = ContextVar(
 
 def _build_antigravity_env() -> dict[str, str]:
     """System baseline + .env.antigravity — secrets excluded."""
-    env = {k: v for k, v in os.environ.items() if k in _SANDBOX_ENV}
-    env.update(_load_env_file(".env.antigravity"))
+    env = {k: v for k, v in os.environ.items() if k in _get_sandbox_env()}
+    env.update(_load_env_file(settings.antigravity_env_file))
     return env
 
 
@@ -134,7 +134,7 @@ class AntigravityAdapter(HarnessAdapter):
             policies=[policy.allow_all()],
             api_key=self._api_key,
             workspaces=[],
-            model=model or "gemini-2.5-flash",
+            model=model or _DEFAULT_MODEL,
         )
 
         latest_user = next(
@@ -150,7 +150,7 @@ class AntigravityAdapter(HarnessAdapter):
         # so no other job's task can interleave and observe a half-applied
         # write. Content is the same file for every job anyway — nothing to
         # isolate per-job, nothing to snapshot/restore.
-        os.environ.update(_load_env_file(".env.antigravity"))
+        os.environ.update(_load_env_file(settings.antigravity_env_file))
         _assert_patch_intact()
         # Set this job's env on the ContextVar — the patched Popen.__init__
         # picks it up. No os.environ mutation, concurrent jobs don't race.

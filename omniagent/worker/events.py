@@ -5,25 +5,29 @@ import logging
 from datetime import UTC, datetime
 
 from omniagent.api.models import ToolCallEntry
+from omniagent.constants import EventType, NotifyType, session_channel
 from omniagent.db import get_conn
 from omniagent.worker.models import BaseEvent
+from omniagent.worker.queries import (
+    pg_notify,
+    update_session_status_failed_running,
+    update_session_tool_calls,
+)
 
 logger = logging.getLogger(__name__)
 
-_CH = lambda sid: "session_" + sid.replace("-", "_")  # noqa: E731
-
 
 async def _emit_event(session_id: str, event: BaseEvent) -> None:
-    ch = _CH(session_id)
+    ch = session_channel(session_id)
     try:
-        if event.type == "error":
+        if event.type == EventType.ERROR:
             async with get_conn() as conn:
                 await conn.execute(
-                    "UPDATE sessions SET status='failed', updated_at=NOW() WHERE id=%s AND status='running'",
+                    update_session_status_failed_running,  # pyright: ignore[reportArgumentType]
                     (session_id,),
                 )
-                await conn.execute("SELECT pg_notify(%s, %s)", (ch, "error"))
-        elif event.type == "tool_result":
+                await conn.execute(pg_notify, (ch, NotifyType.ERROR))
+        elif event.type == EventType.TOOL_RESULT:
             ev = event.model_dump(exclude_none=True)
             if ev.get("input") is not None and "output" in ev:
                 entry_json = json.dumps(
@@ -40,12 +44,12 @@ async def _emit_event(session_id: str, event: BaseEvent) -> None:
                 )
                 async with get_conn() as conn:
                     await conn.execute(
-                        "UPDATE sessions SET tool_calls = tool_calls || %s::jsonb WHERE id=%s",
+                        update_session_tool_calls,  # pyright: ignore[reportArgumentType]
                         (f"[{entry_json}]", session_id),
                     )
-                    await conn.execute("SELECT pg_notify(%s, %s)", (ch, "update"))
+                    await conn.execute(pg_notify, (ch, NotifyType.UPDATE))
         else:
             async with get_conn() as conn:
-                await conn.execute("SELECT pg_notify(%s, %s)", (ch, event.type))
+                await conn.execute(pg_notify, (ch, event.type))
     except Exception as exc:
         logger.warning("emit_event failed: %s", exc)

@@ -17,6 +17,7 @@ from mcp.types import TextContent
 from mcp.types import Tool as McpTool
 
 from omniagent.api.models import MessageRecord
+from omniagent.config import settings
 from omniagent.worker.harness._env import _load_env_file
 from omniagent.worker.harness.base import (
     EXECUTE_PYTHON_DESCRIPTION,
@@ -26,6 +27,10 @@ from omniagent.worker.harness.base import (
 from omniagent.worker.models import EventEmitter, ThinkingEvent, ToolExecutor, ToolSnapshot
 
 logger = logging.getLogger(__name__)
+
+
+_MCP_SERVER_KEY = "omniagent"
+_MCP_SERVER_NAME = "omniagent-tools"
 
 
 class ClaudeAdapter(HarnessAdapter):
@@ -60,16 +65,16 @@ class ClaudeAdapter(HarnessAdapter):
         # in there. No prefix filtering, no container env passthrough.
         # The SDK's env defaults to {} so without this the subprocess sees
         # nothing.
-        _agent_env = _load_env_file(".env.claude")
+        _agent_env = _load_env_file(settings.claude_env_file)
 
         options = ClaudeAgentOptions(
             tools=[],
             model=model or None,
             system_prompt=system_prompt,
             mcp_servers={
-                "omniagent": McpSdkServerConfig(
+                _MCP_SERVER_KEY: McpSdkServerConfig(
                     type="sdk",
-                    name="omniagent",
+                    name=_MCP_SERVER_KEY,
                     instance=mcp_server,
                 )
             },
@@ -99,7 +104,7 @@ def _build_mcp_server(
     use_monty: bool,
     _lf_start_span: Any = None,
 ) -> Server:
-    server = Server("omniagent-tools")
+    server = Server(_MCP_SERVER_NAME)
 
     if use_monty:
         tools = []

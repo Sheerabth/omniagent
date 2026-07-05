@@ -10,10 +10,19 @@ import logging
 from datetime import UTC, datetime
 
 from omniagent.api.models import MessageRecord
+from omniagent.constants import EventType, NotifyType, SessionStatus, session_channel
 from omniagent.db import get_conn
-from omniagent.worker.events import _CH, _emit_event
+from omniagent.worker.events import _emit_event
 from omniagent.worker.models import BaseEvent
 from omniagent.worker.native import DeferInfo
+from omniagent.worker.queries import (
+    build_update_session_complete,
+    build_update_session_deferred_for_cancel,
+    build_update_session_insert_cancel_marker,
+    pg_notify,
+    select_session_messages,
+    select_session_msg_count_and_cancel,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -37,15 +46,14 @@ async def _complete_session(session_id: str, result: str, prior_count: int) -> N
     gets picked up by an immediate follow-up turn, exactly like the non
     cancelled catch-up path below.
     """
-    ch = _CH(session_id)
+    ch = session_channel(session_id)
     has_queued_input = False
     now = datetime.now(UTC).isoformat()
     async with get_conn() as conn:
         # ponytail: jsonb_array_length avoids transferring full messages array.
         # FOR UPDATE still required for cancel_requested atomicity.
         rows = await conn.execute(
-            "SELECT jsonb_array_length(messages) as msg_count, cancel_requested "
-            "FROM sessions WHERE id=%s FOR UPDATE",
+            select_session_msg_count_and_cancel,  # pyright: ignore[reportArgumentType]
             (session_id,),
         )
         sess = await rows.fetchone()
@@ -58,12 +66,12 @@ async def _complete_session(session_id: str, result: str, prior_count: int) -> N
             marker_json = json.dumps(
                 MessageRecord(role="user", content=_CANCEL_MARKER, timestamp=now).model_dump()
             )
-            next_status = "pending" if has_queued_input else "cancelled"
+            next_status = SessionStatus.PENDING if has_queued_input else SessionStatus.CANCELLED
             clear_trace = "" if has_queued_input else ", langfuse_trace_id = NULL"
             await conn.execute(
-                f"UPDATE sessions SET status=%s, "
-                f"messages = jsonb_insert(messages, %s::text[], %s::jsonb), "
-                f"cancel_requested=false, updated_at=NOW(){clear_trace} WHERE id=%s",
+                build_update_session_insert_cancel_marker(
+                    clear_trace
+                ),  # pyright: ignore[reportArgumentType]
                 (next_status, f"{{{prior_count}}}", f"[{marker_json}]", session_id),
             )
             # Always 'cancelled' here — the first turn is stopped, full stop.
@@ -72,25 +80,26 @@ async def _complete_session(session_id: str, result: str, prior_count: int) -> N
             # This gives the client a clean gap between "stopping" (first
             # message done) and "stop" (second message starting), so the user
             # can stop the second message independently.
-            await conn.execute("SELECT pg_notify(%s, %s)", (ch, "cancelled"))
+            await conn.execute(pg_notify, (ch, NotifyType.CANCELLED))
         else:
             assistant_json = json.dumps(
                 MessageRecord(role="assistant", content=result, timestamp=now).model_dump()
             )
-            next_status = "pending" if has_queued_input else "idle"
+            next_status = SessionStatus.PENDING if has_queued_input else SessionStatus.IDLE
             clear_trace = "" if has_queued_input else ", langfuse_trace_id = NULL"
             await conn.execute(
-                f"UPDATE sessions SET status=%s, "
-                f"messages = messages || %s::jsonb, "
-                f"updated_at=NOW(){clear_trace} WHERE id=%s",
+                build_update_session_complete(clear_trace),  # pyright: ignore[reportArgumentType]
                 (next_status, f"[{assistant_json}]", session_id),
             )
-            await conn.execute("SELECT pg_notify(%s, %s)", (ch, "complete"))
+            await conn.execute(pg_notify, (ch, NotifyType.COMPLETE))
 
     if has_queued_input:
+        from omniagent.config import settings
         from omniagent.worker.job import run_agent_job  # lazy, avoids circular import
 
-        await run_agent_job.configure(queue="default").defer_async(session_id=session_id)
+        await run_agent_job.configure(queue=settings.worker_queue_name).defer_async(
+            session_id=session_id
+        )
         logger.info("session %s has queued input, scheduling follow-up turn", session_id)
 
 
@@ -119,8 +128,7 @@ async def _handle_defer(
 
     async with get_conn() as conn:
         rows = await conn.execute(
-            "SELECT jsonb_array_length(messages) as msg_count, cancel_requested "
-            "FROM sessions WHERE id=%s FOR UPDATE",
+            select_session_msg_count_and_cancel,  # pyright: ignore[reportArgumentType]
             (session_id,),
         )
         sess = await rows.fetchone()
@@ -134,19 +142,24 @@ async def _handle_defer(
                 MessageRecord(role="user", content=_CANCEL_MARKER, timestamp=now).model_dump()
             )
             cancelled_with_queued_input = (sess["msg_count"] or 0) > prior_count
-            next_status = "pending" if cancelled_with_queued_input else "cancelled"
+            next_status = (
+                SessionStatus.PENDING if cancelled_with_queued_input else SessionStatus.CANCELLED
+            )
             clear_trace = "" if cancelled_with_queued_input else ", langfuse_trace_id = NULL"
             await conn.execute(
-                f"UPDATE sessions SET status=%s, "
-                f"messages = jsonb_insert(messages, %s::text[], %s::jsonb), "
-                f"cancel_requested=false, updated_at=NOW(){clear_trace} WHERE id=%s",
+                build_update_session_insert_cancel_marker(
+                    clear_trace
+                ),  # pyright: ignore[reportArgumentType]
                 (next_status, f"{{{prior_count}}}", f"[{marker_json}]", session_id),
             )
         else:
             # ponytail: defer non-cancel path does complex splicing (truncate +
             # append assistant + extend queued + append resume marker). Rare —
             # only when agent calls defer_turn. Full array transfer is fine.
-            rows = await conn.execute("SELECT messages FROM sessions WHERE id=%s", (session_id,))
+            rows = await conn.execute(
+                select_session_messages,  # pyright: ignore[reportArgumentType]
+                (session_id,),
+            )
             sess2 = await rows.fetchone()
             if not sess2:
                 return
@@ -165,29 +178,35 @@ async def _handle_defer(
                 ).model_dump()
             )
             await conn.execute(
-                "UPDATE sessions SET status='deferred', messages=%s, deferred_payload=%s, updated_at=NOW() WHERE id=%s",
+                build_update_session_deferred_for_cancel(),  # pyright: ignore[reportArgumentType]
                 (json.dumps(new_messages), "{}", session_id),
             )
 
     if cancelled:
-        ch = _CH(session_id)
+        ch = session_channel(session_id)
         async with get_conn() as conn:
             # Same as _complete_session — always 'cancelled'. If there's
             # queued input the follow-up's own lifecycle fires 'running'.
-            await conn.execute("SELECT pg_notify(%s, %s)", (ch, "cancelled"))
+            await conn.execute(pg_notify, (ch, NotifyType.CANCELLED))
         if cancelled_with_queued_input:
+            from omniagent.config import settings
             from omniagent.worker.job import run_agent_job  # lazy, avoids circular import
 
-            await run_agent_job.configure(queue="default").defer_async(session_id=session_id)
+            await run_agent_job.configure(queue=settings.worker_queue_name).defer_async(
+                session_id=session_id
+            )
         return
 
-    await _emit_event(session_id, BaseEvent(type="deferred"))
+    await _emit_event(session_id, BaseEvent(type=EventType.DEFERRED))
 
     scheduled_at_iso = defer.scheduled_at()
     scheduled_at_dt = datetime.fromisoformat(scheduled_at_iso)
+    from omniagent.config import settings
     from omniagent.worker.job import run_agent_job  # lazy, avoids circular import
 
-    await run_agent_job.configure(queue="default", schedule_at=scheduled_at_dt).defer_async(
+    await run_agent_job.configure(
+        queue=settings.worker_queue_name, schedule_at=scheduled_at_dt
+    ).defer_async(
         session_id=session_id,
     )
     logger.info("session %s deferred until %s", session_id, scheduled_at_iso)

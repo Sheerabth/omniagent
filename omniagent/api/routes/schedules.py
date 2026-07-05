@@ -6,6 +6,17 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from omniagent.api.auth import require_scope
 from omniagent.api.models import ScheduleCreate, ScheduleRecord, ScheduleUpdate
+from omniagent.api.queries import (
+    build_cancel_running_sessions_by_schedule,
+    delete_schedule_by_id,
+    insert_schedule,
+    select_orphaned_scheduled_sessions,
+    select_schedule_by_id,
+    select_schedules,
+    select_sessions_by_schedule,
+    update_schedule_returning,
+)
+from omniagent.constants import SessionStatus
 from omniagent.crypto import encrypt_auth_context
 from omniagent.db import get_conn
 
@@ -34,11 +45,7 @@ async def create_schedule(
 
     async with get_conn() as conn:
         rows = await conn.execute(
-            """INSERT INTO schedules
-               (agent_name, cron_expr, prompt, auth_context, enabled, next_run_at)
-               VALUES (%s, %s, %s, %s, %s, %s)
-               RETURNING id, agent_name, cron_expr, prompt, enabled,
-                         last_run_at, next_run_at, created_at, updated_at""",
+            insert_schedule,
             (body.agent_name, body.cron_expr, body.prompt, encrypted_auth, body.enabled, next_run),
         )
         row = await rows.fetchone()
@@ -49,10 +56,7 @@ async def create_schedule(
 @router.get("", response_model=list[ScheduleRecord])
 async def list_schedules(_=Depends(require_scope("agents:read"))) -> list[ScheduleRecord]:
     async with get_conn() as conn:
-        rows = await conn.execute(
-            "SELECT id, agent_name, cron_expr, prompt, enabled, "
-            "last_run_at, next_run_at, created_at, updated_at FROM schedules ORDER BY created_at DESC"
-        )
+        rows = await conn.execute(select_schedules)
         return [ScheduleRecord.model_validate(dict(r)) for r in await rows.fetchall()]
 
 
@@ -61,9 +65,7 @@ async def list_orphaned_runs(_=Depends(require_scope("agents:read"))) -> list:
     from omniagent.api.models import SessionRecord
 
     async with get_conn() as conn:
-        rows = await conn.execute(
-            "SELECT * FROM sessions WHERE is_scheduled = TRUE AND schedule_id IS NULL ORDER BY created_at DESC LIMIT 200"
-        )
+        rows = await conn.execute(select_orphaned_scheduled_sessions)
         return [
             SessionRecord.model_validate(dict(r)).model_dump(mode="json")
             for r in await rows.fetchall()
@@ -75,11 +77,7 @@ async def get_schedule(
     schedule_id: uuid.UUID, _=Depends(require_scope("agents:read"))
 ) -> ScheduleRecord:
     async with get_conn() as conn:
-        rows = await conn.execute(
-            "SELECT id, agent_name, cron_expr, prompt, enabled, "
-            "last_run_at, next_run_at, created_at, updated_at FROM schedules WHERE id = %s",
-            (schedule_id,),
-        )
+        rows = await conn.execute(select_schedule_by_id, (schedule_id,))
         row = await rows.fetchone()
     if not row:
         raise HTTPException(404)
@@ -112,9 +110,7 @@ async def update_schedule(
 
     async with get_conn() as conn:
         rows = await conn.execute(
-            f"UPDATE schedules SET {', '.join(sets)} WHERE id=%s "
-            "RETURNING id, agent_name, cron_expr, prompt, enabled, "
-            "last_run_at, next_run_at, created_at, updated_at",
+            update_schedule_returning.format(sets=", ".join(sets)),
             vals,
         )
         row = await rows.fetchone()
@@ -130,10 +126,7 @@ async def list_schedule_runs(
     from omniagent.api.models import SessionRecord
 
     async with get_conn() as conn:
-        rows = await conn.execute(
-            "SELECT * FROM sessions WHERE schedule_id = %s ORDER BY created_at DESC LIMIT 50",
-            (schedule_id,),
-        )
+        rows = await conn.execute(select_sessions_by_schedule, (schedule_id,))
         return [
             SessionRecord.model_validate(dict(r)).model_dump(mode="json")
             for r in await rows.fetchall()
@@ -144,7 +137,9 @@ async def list_schedule_runs(
 async def delete_schedule(schedule_id: uuid.UUID, _=Depends(require_scope("agents:write"))) -> None:
     async with get_conn() as conn, conn.transaction():
         await conn.execute(
-            "UPDATE sessions SET status='cancelled', updated_at=NOW() WHERE schedule_id=%s AND status='pending'",
+            build_cancel_running_sessions_by_schedule(
+                SessionStatus.CANCELLED.value
+            ),  # pyright: ignore[reportArgumentType]
             (schedule_id,),
         )
-        await conn.execute("DELETE FROM schedules WHERE id = %s", (schedule_id,))
+        await conn.execute(delete_schedule_by_id, (schedule_id,))

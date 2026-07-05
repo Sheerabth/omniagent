@@ -10,6 +10,25 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
 from omniagent.api.auth import require_scope
+from omniagent.api.queries import (
+    delete_expired_oauth_pending,
+    delete_oauth2_pending_returning,
+    insert_oauth2_pending,
+    select_namespace_auth_context,
+    select_tool_security,
+    upsert_namespace_auth,
+)
+from omniagent.config import settings
+from omniagent.constants import (
+    APPLICATION_JSON,
+    GRANT_TYPE_AUTHORIZATION_CODE,
+    SEC_TYPE_OAUTH2,
+    TOKEN_KEY_ACCESS_TOKEN,
+    TOKEN_KEY_CLIENT_ID,
+    TOKEN_KEY_CLIENT_SECRET,
+    TOKEN_KEY_EXPIRES_IN,
+    TOKEN_KEY_REFRESH_TOKEN,
+)
 from omniagent.crypto import decrypt_auth_context, encrypt_auth_context
 from omniagent.db import get_conn
 
@@ -24,26 +43,24 @@ async def oauth2_connect(
     _=Depends(require_scope("auth:write")),
 ) -> RedirectResponse:
     async with get_conn() as conn:
-        tool_row = await (
-            await conn.execute("SELECT openapi_security FROM tools WHERE name=%s", (tool_name,))
-        ).fetchone()
+        tool_row = await (await conn.execute(select_tool_security, (tool_name,))).fetchone()
         if not tool_row:
             raise HTTPException(404, "Tool not found")
         sec: dict = tool_row["openapi_security"] or {}
 
-        if sec.get("type") != "oauth2" or not sec.get("authorization_url"):
+        if sec.get("type") != SEC_TYPE_OAUTH2 or not sec.get("authorization_url"):
             raise HTTPException(400, "Tool has no OAuth2 authorization code flow")
 
         scheme_name: str = sec.get("scheme_name", "")
         auth_row = await (
             await conn.execute(
-                "SELECT auth_context FROM namespace_auth WHERE namespace=%s AND scheme_name=%s",
+                select_namespace_auth_context,
                 (namespace, scheme_name),
             )
         ).fetchone()
         auth_ctx: dict = decrypt_auth_context(auth_row["auth_context"]) if auth_row else {}
 
-        client_id_key = sec.get("client_id_key", "client_id")
+        client_id_key = sec.get("client_id_key", TOKEN_KEY_CLIENT_ID)
         client_id = auth_ctx.get(client_id_key)
         if not client_id:
             raise HTTPException(
@@ -53,10 +70,10 @@ async def oauth2_connect(
 
         state = secrets.token_urlsafe(16)
         redirect_uri = str(request.base_url).rstrip("/") + "/oauth2/callback"
-        expires_at = datetime.now(UTC) + timedelta(minutes=10)
-        await conn.execute("DELETE FROM oauth2_pending WHERE expires_at < NOW()")
+        expires_at = datetime.now(UTC) + timedelta(minutes=settings.oauth_pending_expiry_minutes)
+        await conn.execute(delete_expired_oauth_pending)
         await conn.execute(
-            "INSERT INTO oauth2_pending (state, data, expires_at) VALUES (%s, %s, %s)",
+            insert_oauth2_pending,
             (
                 state,
                 json.dumps(
@@ -86,57 +103,51 @@ async def oauth2_connect(
 @router.get("/callback")
 async def oauth2_callback(code: str, state: str) -> RedirectResponse:
     async with get_conn() as conn:
-        row = await (
-            await conn.execute(
-                "DELETE FROM oauth2_pending WHERE state=%s AND expires_at > NOW() RETURNING data",
-                (state,),
-            )
-        ).fetchone()
+        row = await (await conn.execute(delete_oauth2_pending_returning, (state,))).fetchone()
     if not row:
         raise HTTPException(400, "Invalid or expired OAuth2 state")
     entry = row["data"]
 
     sec = entry["security"]
     auth_ctx = entry["auth_ctx"]
-    client_id = auth_ctx.get(sec.get("client_id_key", "client_id"), "")
-    client_secret = auth_ctx.get(sec.get("client_secret_key", "client_secret"), "")
+    client_id = auth_ctx.get(sec.get("client_id_key", TOKEN_KEY_CLIENT_ID), "")
+    client_secret = auth_ctx.get(sec.get("client_secret_key", TOKEN_KEY_CLIENT_SECRET), "")
 
     try:
         async with httpx.AsyncClient() as client:
             resp = await client.post(
                 sec["token_url"],
                 data={
-                    "grant_type": "authorization_code",
+                    "grant_type": GRANT_TYPE_AUTHORIZATION_CODE,
                     "code": code,
                     "redirect_uri": entry["redirect_uri"],
                     "client_id": client_id,
                     "client_secret": client_secret,
                 },
-                headers={"Accept": "application/json"},
+                headers={"Accept": APPLICATION_JSON},
             )
             resp.raise_for_status()
             data = resp.json()
     except httpx.HTTPStatusError as e:
         raise HTTPException(502, f"Provider token exchange failed: {e.response.status_code}") from e
 
-    if "access_token" not in data:
+    if TOKEN_KEY_ACCESS_TOKEN not in data:
         raise HTTPException(502, f"Provider returned no access_token: {data}")
 
     new_ctx = {
         **(auth_ctx or {}),
-        "access_token": data["access_token"],
+        TOKEN_KEY_ACCESS_TOKEN: data[TOKEN_KEY_ACCESS_TOKEN],
     }
-    if "refresh_token" in data:
-        new_ctx["refresh_token"] = data["refresh_token"]
-    if "expires_in" in data:
-        new_ctx["token_expiry"] = int(datetime.now(UTC).timestamp()) + int(data["expires_in"])
+    if TOKEN_KEY_REFRESH_TOKEN in data:
+        new_ctx[TOKEN_KEY_REFRESH_TOKEN] = data[TOKEN_KEY_REFRESH_TOKEN]
+    if TOKEN_KEY_EXPIRES_IN in data:
+        new_ctx["token_expiry"] = int(datetime.now(UTC).timestamp()) + int(
+            data[TOKEN_KEY_EXPIRES_IN]
+        )
 
     async with get_conn() as conn:
         await conn.execute(
-            """INSERT INTO namespace_auth (namespace, scheme_name, auth_context, updated_at)
-               VALUES (%s, %s, %s, NOW())
-               ON CONFLICT (namespace, scheme_name) DO UPDATE
-                 SET auth_context = EXCLUDED.auth_context, updated_at = NOW()""",
+            upsert_namespace_auth,
             (entry["namespace"], entry["scheme_name"], encrypt_auth_context(new_ctx)),
         )
 

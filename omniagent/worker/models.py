@@ -6,6 +6,8 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel
 
+from omniagent.constants import EventType
+
 
 class ToolSnapshot(BaseModel):
     name: str
@@ -41,7 +43,7 @@ class BaseEvent(BaseModel):
 
 
 class ToolCallEvent(BaseEvent):
-    type: str = "tool_call"
+    type: str = EventType.TOOL_CALL
     tool: str
     input: dict[str, Any]
     harness: str | None = None
@@ -49,7 +51,7 @@ class ToolCallEvent(BaseEvent):
 
 
 class ToolResultEvent(BaseEvent):
-    type: str = "tool_result"
+    type: str = EventType.TOOL_RESULT
     tool: str
     input: dict[str, Any]
     success: bool
@@ -60,18 +62,18 @@ class ToolResultEvent(BaseEvent):
 
 
 class SystemPromptEvent(BaseEvent):
-    type: str = "system_prompt"
+    type: str = EventType.SYSTEM_PROMPT
     content: str
     input: list
 
 
 class ThinkingEvent(BaseEvent):
-    type: str = "thinking"
+    type: str = EventType.THINKING
     content: str
 
 
 class ErrorEvent(BaseEvent):
-    type: str = "error"
+    type: str = EventType.ERROR
     reason: str
 
 
