@@ -6,7 +6,6 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 
 from omniagent.api.auth import require_scope
-from omniagent.api.db import get_conn
 from omniagent.api.models import (
     MessageRecord,
     ResumeRequest,
@@ -16,6 +15,7 @@ from omniagent.api.models import (
     SessionStatus,
     ToolCallEntry,
 )
+from omniagent.db import get_conn
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 

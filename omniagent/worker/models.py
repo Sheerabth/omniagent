@@ -18,7 +18,7 @@ class ToolSnapshot(BaseModel):
     openapi_security: dict | None = None
     timeout: int | None = None
     skill_name: str = ""
-    auth_context: Any = None
+    auth_context: Any = None  # decrypted JSON blob, subscripted dynamically by security scheme
     is_native: bool = False  # native tools are handled before the HTTP executor
 
 
@@ -88,3 +88,27 @@ class EventEmitter(Protocol):
 
 class MontyExecutor(Protocol):
     async def __call__(self, code: str, observation: str) -> str: ...
+
+
+# ── Database row models ────────────────────────────────────────────────────
+# Internal: validate DB rows at the boundary so downstream code gets typed
+# fields instead of dict[str, Any].
+
+
+class _SessionConfigRow(BaseModel):
+    """Partial sessions row for ``_fetch_session_config`` — only the columns
+    needed to load agent/toolbox/tool refs, avoids fetching full messages."""
+
+    agent_name: str
+    agent_version: str
+    toolbox_versions: dict[str, str]
+    tool_refs: list[str]
+
+
+class _NamespaceAuthRow(BaseModel):
+    """Raw ``namespace_auth`` table row.  ``auth_context`` is the Fernet-
+    encrypted blob; call ``decrypt_auth_context`` to unwrap it."""
+
+    namespace: str
+    scheme_name: str
+    auth_context: str | None

@@ -3,9 +3,9 @@
 from fastapi import APIRouter, Depends, HTTPException
 
 from omniagent.api.auth import require_scope
-from omniagent.api.crypto import decrypt_auth_context, encrypt_auth_context
-from omniagent.api.db import get_conn
 from omniagent.api.models import NamespaceAuthSet, NamespaceRecord, SchemeRecord
+from omniagent.crypto import decrypt_auth_context, encrypt_auth_context
+from omniagent.db import get_conn
 
 router = APIRouter(prefix="/namespaces", tags=["namespaces"])
 

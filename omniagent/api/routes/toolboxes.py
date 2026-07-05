@@ -1,8 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException
 
 from omniagent.api.auth import require_scope
-from omniagent.api.db import DictConn, get_conn
 from omniagent.api.models import ToolboxCreate, ToolboxRecord
+from omniagent.db import DictConn, get_conn
 
 router = APIRouter(prefix="/toolboxes", tags=["toolboxes"])
 

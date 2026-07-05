@@ -3,9 +3,9 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException
 
 from omniagent.api.auth import require_scope
-from omniagent.api.db import get_conn
 from omniagent.api.models import VALID_SCOPES, ApiKeyCreate, ApiKeyRecord, ApiKeyResponse
 from omniagent.api.secrets import generate_key, hash_key
+from omniagent.db import get_conn
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 

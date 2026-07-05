@@ -15,7 +15,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from omniagent.api import sse_hub
 from omniagent.api.auth import require_scope
-from omniagent.api.db import get_conn
+from omniagent.db import get_conn
 
 logger = logging.getLogger(__name__)
 

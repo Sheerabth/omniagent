@@ -3,8 +3,8 @@ import json
 from fastapi import APIRouter, Depends
 
 from omniagent.api.auth import require_scope
-from omniagent.api.db import get_conn
 from omniagent.api.models import MemorySetRequest
+from omniagent.db import get_conn
 
 router = APIRouter(prefix="/memory", tags=["memory"])
 

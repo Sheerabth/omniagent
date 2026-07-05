@@ -9,7 +9,7 @@ from procrastinate import PsycopgConnector
 
 logger = logging.getLogger(__name__)
 
-MIGRATIONS_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "migrations")
+MIGRATIONS_DIR = os.path.join(os.path.dirname(__file__), "..", "migrations")
 
 
 async def run_migrations(dsn: str) -> None:

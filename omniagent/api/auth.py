@@ -16,8 +16,8 @@ from collections.abc import Callable
 from fastapi import HTTPException, Request, Security
 from fastapi.security import APIKeyHeader
 
-from omniagent.api.db import get_conn
 from omniagent.api.secrets import verify_key
+from omniagent.db import get_conn
 
 logger = logging.getLogger(__name__)
 

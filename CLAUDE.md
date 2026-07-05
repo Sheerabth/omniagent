@@ -15,6 +15,10 @@ Never use `@dataclass` for data that crosses module boundaries. Use Pydantic `Ba
 
 Plain `dict` params are only acceptable at framework boundaries (e.g. FastAPI path/query params). Internal functions must use Pydantic models.
 
+**DB table rows must be Pydantic models.** Never pass raw `dict[str, Any]` rows from `conn.execute()` across function boundaries. Define a `BaseModel` for each table (or reuse an existing one from `api/models.py`) and call `model_validate(dict(row))` at the query site. Partial queries that select non-standard columns can use a purpose-specific model in the same module. One-off expression queries (e.g. `jsonb_array_length`) are exempt.
+
+**Avoid `typing.Any`.** Use it only where the type is genuinely unknowable: LLM-generated tool arguments (`dict[str, Any]`), decrypted/auth JSON blobs, external API responses before parsing, and generic wrappers (`_safe_lf`). Everywhere else, use the narrowest type possible — `object`, `str | int | None`, a Pydantic model, or a Protocol.
+
 ## Dependencies
 
 Use `uv add --dev <package>` for dev tools. Never `pip install` directly — it bypasses `pyproject.toml` and `uv.lock`.
@@ -53,6 +57,8 @@ These rules are load-bearing. Breaking them introduces subtle race conditions an
 **Auth context is encrypted at rest.** `namespace_auth.auth_context` stores Fernet-encrypted JSON at rest. Always use `encrypt_auth_context` / `decrypt_auth_context`. If the encryption key is unset, falls back to plaintext with a warning — this is backward compat, not a bug.
 
 **Encryption key is a Fernet key.** Generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. Set as `OMNIAGENT_ENCRYPTION_KEY`.
+
+**No cross-module imports between `api/` and `worker/`.** `api/` must not import from `omniagent.worker`, and `worker/` must not import from `omniagent.api`. Shared code lives at the `omniagent/` package level (`omniagent.db`, `omniagent.crypto`, `omniagent.migrations`, `omniagent.config`). The only allowed cross-reference is `api/` importing `worker.job.run_agent_job` inside a function body (lazy import) to defer jobs — the procrastinate task queue requires this.
 
 **API and worker are both horizontally scalable — many processes, no shared memory.** Every change must hold under N api instances and N worker instances running concurrently, not just one of each.
 

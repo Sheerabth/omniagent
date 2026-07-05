@@ -4,8 +4,8 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 
 from omniagent.api.auth import require_scope
-from omniagent.api.db import DictConn, get_conn
 from omniagent.api.models import AgentCreate, AgentRecord
+from omniagent.db import DictConn, get_conn
 
 logger = logging.getLogger(__name__)
 

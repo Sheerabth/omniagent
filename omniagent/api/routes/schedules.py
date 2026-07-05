@@ -5,9 +5,9 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException
 
 from omniagent.api.auth import require_scope
-from omniagent.api.crypto import encrypt_auth_context
-from omniagent.api.db import get_conn
 from omniagent.api.models import ScheduleCreate, ScheduleRecord, ScheduleUpdate
+from omniagent.crypto import encrypt_auth_context
+from omniagent.db import get_conn
 
 router = APIRouter(prefix="/schedules", tags=["schedules"])
 

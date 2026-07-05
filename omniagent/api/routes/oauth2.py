@@ -10,8 +10,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
 from omniagent.api.auth import require_scope
-from omniagent.api.crypto import decrypt_auth_context, encrypt_auth_context
-from omniagent.api.db import get_conn
+from omniagent.crypto import decrypt_auth_context, encrypt_auth_context
+from omniagent.db import get_conn
 
 router = APIRouter(prefix="/oauth2", tags=["oauth2"])
 

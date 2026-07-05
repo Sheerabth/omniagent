@@ -5,9 +5,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from omniagent.api.auth import require_scope
-from omniagent.api.db import get_conn
 from omniagent.api.models import ToolRecord
 from omniagent.api.openapi import parse_spec
+from omniagent.db import get_conn
 
 router = APIRouter(prefix="/tools", tags=["tools"])
 

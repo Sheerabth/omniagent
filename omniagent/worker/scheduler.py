@@ -24,7 +24,7 @@ class _ScheduleRow(BaseModel):
 async def check_schedules(timestamp: int) -> None:
     from croniter import croniter
 
-    from omniagent.api.db import get_conn
+    from omniagent.db import get_conn
 
     async with get_conn() as conn:
         rows = await conn.execute(
@@ -51,7 +51,7 @@ async def check_schedules(timestamp: int) -> None:
 
 
 async def _fire_schedule(sched: _ScheduleRow) -> None:
-    from omniagent.api.db import get_conn
+    from omniagent.db import get_conn
 
     async with get_conn() as conn:
         rows = await conn.execute(

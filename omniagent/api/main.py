@@ -9,9 +9,10 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 
-from omniagent.api import db, queue
-from omniagent.api.metrics import REQUEST_COUNT, REQUEST_LATENCY, render_metrics
+from omniagent import db
+from omniagent.api import queue
 from omniagent.api.routes import (
     agents,
     auth,
@@ -31,6 +32,24 @@ configure_logging()
 logger = logging.getLogger(__name__)
 
 _UI_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "ui")
+
+# ── Prometheus metrics ──────────────────────────────────────────────────
+
+REQUEST_COUNT = Counter(
+    "omniagent_http_requests_total",
+    "HTTP requests by method, route template, and status code",
+    ["method", "path", "status"],
+)
+
+REQUEST_LATENCY = Histogram(
+    "omniagent_http_request_duration_seconds",
+    "HTTP request latency by method and route template",
+    ["method", "path"],
+)
+
+
+def _render_metrics() -> tuple[bytes, str]:
+    return generate_latest(), CONTENT_TYPE_LATEST
 
 
 async def _mark_session_failed(session_id: str) -> None:
@@ -77,8 +96,8 @@ async def _reconcile_stuck_sessions() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     from omniagent.api import sse_hub
-    from omniagent.api.migrations import run_migrations
     from omniagent.config import settings
+    from omniagent.migrations import run_migrations
     from omniagent.worker.job import app as proc_app
 
     dsn = settings.database_url
@@ -121,7 +140,7 @@ async def trace_and_metrics(request: Request, call_next):
 
 @app.get("/metrics", include_in_schema=False)
 async def metrics() -> Response:
-    body, content_type = render_metrics()
+    body, content_type = _render_metrics()
     return Response(body, media_type=content_type)
 
 
