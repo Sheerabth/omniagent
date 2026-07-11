@@ -42,6 +42,7 @@ class HarnessName(StrEnum):
 
     CLAUDE = "claude"
     ANTIGRAVITY = "antigravity"
+    PYDANTIC_AI = "pydantic_ai"
 
 
 def session_channel(session_id: str | uuid.UUID) -> str:

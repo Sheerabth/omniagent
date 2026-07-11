@@ -17,9 +17,7 @@ venv/
 # env
 .env
 .env.*
-!.env.example
-!.env.claude.example
-!.env.antigravity.example
+!.env.*.example
 
 # IDE
 .idea/

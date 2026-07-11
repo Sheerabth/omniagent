@@ -33,6 +33,7 @@ dependencies = [
     # tracing
     "langfuse",
     "sqlalchemy[asyncio]>=2.0.51",
+    "pydantic-ai>=2.9.0",
 ]
 
 [project.optional-dependencies]

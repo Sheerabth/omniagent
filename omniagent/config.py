@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     # ── harness env files ───────────────────────────────────────────────────
     antigravity_env_file: str = ".env.antigravity"
     claude_env_file: str = ".env.claude"
+    pydantic_env_file: str = ".env.pydantic"
 
     # ── antigravity sandbox ─────────────────────────────────────────────────
     antigravity_sandbox_env_vars: list[str] = [

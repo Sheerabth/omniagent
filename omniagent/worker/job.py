@@ -241,6 +241,10 @@ async def run_agent_job(session_id: str) -> None:
                     from omniagent.worker.harness.claude import ClaudeAdapter
 
                     adapter = ClaudeAdapter(_lf_start_span=_mk_lf_span)
+                elif harness == HarnessName.PYDANTIC_AI:
+                    from omniagent.worker.harness.pydantic_ai import PydanticAIAdapter
+
+                    adapter = PydanticAIAdapter(_lf_start_span=_mk_lf_span)
                 else:
                     raise ValueError(f"Unknown harness: {harness!r}")
 

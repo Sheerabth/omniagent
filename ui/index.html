@@ -314,9 +314,12 @@
       <select id="agent-harness" onchange="updateModelOptions()">
         <option value="antigravity">antigravity (Gemini)</option>
         <option value="claude">claude</option>
+        <option value="pydantic_ai">pydantic_ai</option>
       </select>
       <label>Model</label>
-      <select id="agent-model"></select>
+      <input type="text" id="agent-model" list="model-options" placeholder="e.g. openai:gpt-4o" autocomplete="off">
+      <datalist id="model-options"></datalist>
+      <small id="model-hint" style="display:block;margin-top:2px;color:#666;font-size:11px"></small>
       <label>System Prompt</label>
       <textarea id="agent-system" placeholder="You are a helpful assistant."></textarea>
       <label style="flex-direction:row;align-items:center;gap:8px;display:flex">
@@ -949,29 +952,52 @@ function editSkillEl(el) { editToolbox(el.dataset.name, el.dataset.version); }
 function editAgentEl(el) { editAgent(el.dataset.name, el.dataset.version); }
 
 const MODEL_OPTIONS = {
-  antigravity: [
-    { value: 'gemini-2.5-flash',                    label: 'Gemini 2.5 Flash' },
-    { value: 'gemini-2.5-pro',                      label: 'Gemini 2.5 Pro' },
-    { value: 'gemini-3.1-pro-preview-customtools',  label: 'Gemini 3.1 Pro Preview (agentic)' },
-    { value: 'gemini-3.5-flash',                    label: 'Gemini 3.5 Flash (default)' },
-  ],
-  claude: [
-    { value: 'claude-sonnet-4-6',         label: 'Claude Sonnet 4.6 (default)' },
-    { value: 'claude-opus-4-8',           label: 'Claude Opus 4.8' },
-    { value: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5' },
-  ],
+  antigravity: {
+    hint: 'e.g. gemini-2.5-flash. <a href="https://ai.google.dev/gemini-api/docs/models" target="_blank">Gemini models</a>',
+    models: [
+      { value: 'gemini-2.5-flash',                    label: 'Gemini 2.5 Flash' },
+      { value: 'gemini-2.5-pro',                      label: 'Gemini 2.5 Pro' },
+      { value: 'gemini-3.1-pro-preview-customtools',  label: 'Gemini 3.1 Pro Preview (agentic)' },
+      { value: 'gemini-3.5-flash',                    label: 'Gemini 3.5 Flash (default)' },
+    ],
+  },
+  claude: {
+    hint: 'e.g. claude-sonnet-4-6. <a href="https://docs.anthropic.com/en/docs/about-claude/models" target="_blank">Claude models</a>',
+    models: [
+      { value: 'claude-sonnet-4-6',         label: 'Claude Sonnet 4.6 (default)' },
+      { value: 'claude-opus-4-8',           label: 'Claude Opus 4.8' },
+      { value: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5' },
+    ],
+  },
+  pydantic_ai: {
+    hint: 'provider:model_id. Set keys in .env.pydantic. <a href="https://ai.pydantic.dev/models/" target="_blank">All Pydantic AI models</a>',
+    models: [
+      { value: 'openai:gpt-4o',              label: 'GPT-4o (OpenAI)' },
+      { value: 'openai:gpt-4.1',             label: 'GPT-4.1 (OpenAI)' },
+      { value: 'openai:o4-mini',             label: 'o4-mini (OpenAI)' },
+      { value: 'anthropic:claude-sonnet-4-6', label: 'Claude Sonnet 4.6 (Anthropic)' },
+      { value: 'anthropic:claude-opus-4-8',   label: 'Claude Opus 4.8 (Anthropic)' },
+      { value: 'groq:llama-4-maverick',       label: 'Llama 4 Maverick (Groq)' },
+      { value: 'mistral:mistral-large-latest',label: 'Mistral Large' },
+      { value: 'deepseek:deepseek-chat',      label: 'DeepSeek Chat' },
+      { value: 'google-gla:gemini-2.5-flash', label: 'Gemini 2.5 Flash (Google)' },
+    ],
+  },
 };
 
 function updateModelOptions(currentModel) {
   const harness = document.getElementById('agent-harness').value;
-  const sel = document.getElementById('agent-model');
-  const opts = MODEL_OPTIONS[harness] || [];
-  sel.innerHTML = opts.map(o =>
-    `<option value="${o.value}"${o.value === currentModel ? ' selected' : ''}>${escHtml(o.label)}</option>`
+  const input = document.getElementById('agent-model');
+  const list = document.getElementById('model-options');
+  const hint = document.getElementById('model-hint');
+  const cfg = MODEL_OPTIONS[harness] || { hint: '', models: [] };
+  const opts = cfg.models || [];
+
+  list.innerHTML = opts.map(o =>
+    `<option value="${escHtml(o.value)}">${escHtml(o.label)}</option>`
   ).join('');
-  if (currentModel && !opts.find(o => o.value === currentModel)) {
-    sel.innerHTML += `<option value="${escHtml(currentModel)}" selected>${escHtml(currentModel)}</option>`;
-  }
+  hint.innerHTML = cfg.hint || '';
+  input.value = currentModel || '';
 }
 
 function newAgent() {

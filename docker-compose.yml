@@ -59,6 +59,7 @@ services:
     volumes:
       - ./.env.claude:/app/.env.claude:ro
       - ./.env.antigravity:/app/.env.antigravity:ro
+      - ./.env.pydantic:/app/.env.pydantic:ro
     networks:
       - omniagent_net
     extra_hosts:
