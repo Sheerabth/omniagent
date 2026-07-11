@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import Any
 
-from omniagent.api.models import MessageRecord
+from omniagent.api.models import FileRef, MessageRecord
 from omniagent.worker.models import (
     EventEmitter,
     MontyExecutor,
@@ -78,6 +78,18 @@ def make_monty_executor(
     return execute_python
 
 
+def embed_files(files: list[FileRef]) -> str:
+    """List attached files — model uses native.file_read to inspect content."""
+    parts = [
+        "[Files attached to this message. Call file_read(path='...') to get file content. "
+        "Files are in remote storage, not the sandbox filesystem — don't try open() or import. "
+        "Use file_list(prefix='...') to browse, file_write(path, content) / file_append to create.]"
+    ]
+    for ref in files:
+        parts.append(f"- {ref.name} ({ref.content_type}, {ref.size} bytes) -> path='{ref.path}'")
+    return "\n".join(parts)
+
+
 class HarnessAdapter(ABC):
 
     @abstractmethod
@@ -91,6 +103,11 @@ class HarnessAdapter(ABC):
         tool_snapshot: dict[str, ToolSnapshot],
         model: str = "",
         tool_calls: list[dict[str, Any]] | None = None,
+        files: list[FileRef] | None = None,
     ) -> str:
-        """Run agent loop. Returns final text response."""
+        """Run agent loop. Returns final text response.
+
+        *files* are FileRefs attached to the current user turn.
+        Model inspects content via native.file_read tool at runtime.
+        """
         ...

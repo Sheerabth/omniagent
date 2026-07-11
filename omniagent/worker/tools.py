@@ -1,6 +1,7 @@
 """Tool execution — HTTP-based external tools and native tool handlers."""
 
 import base64
+import contextlib
 import json
 import logging
 import re
@@ -22,6 +23,7 @@ from omniagent.constants import (
     SEC_TYPE_OIDC,
 )
 from omniagent.db import get_conn
+from omniagent.storage import StorageClient
 from omniagent.worker.auth import _get_oauth_token, _get_oidc_token
 from omniagent.worker.http import _get_http_client
 from omniagent.worker.models import EventEmitter, ToolCallEvent, ToolResultEvent, ToolSnapshot
@@ -154,6 +156,7 @@ class NativeToolContext(BaseModel):
     harness: str
     tool_snapshot: dict[str, ToolSnapshot]
     defer_state: dict[str, DeferInfo]  # mutated in-place by defer_turn / defer_turn_until
+    storage: StorageClient
 
 
 class NativeToolExecutor:
@@ -561,6 +564,144 @@ class NativeToolExecutor:
         )
         return result
 
+    # ── File tools ────────────────────────────────────────────────────────
+
+    async def _file_read(self, input_data: dict[str, Any]) -> str:
+        path = input_data["path"]
+        await self._emit(
+            ToolCallEvent(
+                tool="native.file_read",
+                input=input_data,
+                harness=self._ctx.harness,
+                skill_name=_SKILL_NAME,
+            ),
+        )
+        content = await self._ctx.storage.file_read(
+            self._ctx.session_id,
+            path,
+            offset=input_data.get("offset", 0),
+            limit=input_data.get("limit"),
+            tail=input_data.get("tail"),
+            grep=input_data.get("grep"),
+        )
+        await self._emit(
+            ToolResultEvent(
+                tool="native.file_read",
+                success=True,
+                input=input_data,
+                output=content,
+                harness=self._ctx.harness,
+                skill_name=_SKILL_NAME,
+            ),
+        )
+        return content
+
+    async def _file_write(self, input_data: dict[str, Any]) -> dict[str, Any]:
+        path = input_data["path"]
+        content = input_data["content"]
+        await self._emit(
+            ToolCallEvent(
+                tool="native.file_write",
+                input=input_data,
+                harness=self._ctx.harness,
+                skill_name=_SKILL_NAME,
+            ),
+        )
+        data = content.encode("utf-8")
+        ref = await self._ctx.storage.upload(
+            self._ctx.session_id,
+            path,
+            data,
+            input_data.get("content_type", "text/plain"),
+        )
+        result = {"path": path, "size": ref.size, "ok": True}
+        await self._emit(
+            ToolResultEvent(
+                tool="native.file_write",
+                success=True,
+                input=input_data,
+                output=result,
+                harness=self._ctx.harness,
+                skill_name=_SKILL_NAME,
+            ),
+        )
+        return result
+
+    async def _file_append(self, input_data: dict[str, Any]) -> dict[str, Any]:
+        path = input_data["path"]
+        content = input_data["content"]
+        await self._emit(
+            ToolCallEvent(
+                tool="native.file_append",
+                input=input_data,
+                harness=self._ctx.harness,
+                skill_name=_SKILL_NAME,
+            ),
+        )
+        # Read existing content, append, write back.
+
+        existing = b""
+        with contextlib.suppress(Exception):
+            existing = await self._ctx.storage.download(self._ctx.session_id, path)
+
+        new_data = existing + content.encode("utf-8")
+        ref = await self._ctx.storage.upload(
+            self._ctx.session_id,
+            path,
+            new_data,
+            input_data.get("content_type", "text/plain"),
+        )
+        result = {"path": path, "size": ref.size, "ok": True}
+        await self._emit(
+            ToolResultEvent(
+                tool="native.file_append",
+                success=True,
+                input=input_data,
+                output=result,
+                harness=self._ctx.harness,
+                skill_name=_SKILL_NAME,
+            ),
+        )
+        return result
+
+    async def _file_list(self, input_data: dict[str, Any]) -> list[dict[str, Any]]:
+        prefix = input_data.get("prefix", "")
+        max_results = input_data.get("max_results", 200)
+        await self._emit(
+            ToolCallEvent(
+                tool="native.file_list",
+                input=input_data,
+                harness=self._ctx.harness,
+                skill_name=_SKILL_NAME,
+            ),
+        )
+        files = await self._ctx.storage.list_objects(
+            self._ctx.session_id,
+            prefix=prefix,
+            max_results=max_results,
+        )
+        output = [
+            {
+                "path": f.path,
+                "name": f.name,
+                "content_type": f.content_type,
+                "size": f.size,
+                "updated_at": f.updated_at,
+            }
+            for f in files
+        ]
+        await self._emit(
+            ToolResultEvent(
+                tool="native.file_list",
+                success=True,
+                input=input_data,
+                output=output,
+                harness=self._ctx.harness,
+                skill_name=_SKILL_NAME,
+            ),
+        )
+        return output
+
 
 # Dispatch table — maps tool_name → handler method
 _NATIVE_HANDLERS: dict[str, str] = {
@@ -574,4 +715,8 @@ _NATIVE_HANDLERS: dict[str, str] = {
     "native.schedule_delete": "_schedule_delete",
     "native.defer_turn": "_defer_turn",
     "native.defer_turn_until": "_defer_turn_until",
+    "native.file_read": "_file_read",
+    "native.file_write": "_file_write",
+    "native.file_append": "_file_append",
+    "native.file_list": "_file_list",
 }

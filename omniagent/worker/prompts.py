@@ -51,7 +51,11 @@ def _build_system_prompt(
             "Do NOT try to import anything. Do NOT probe the environment. Do NOT check available modules. "
             "JUST call the listed functions directly — they handle all networking and auth internally. "
             "ALWAYS write a SINGLE execute_python call that does everything — fetch all data, process it, and return the final answer. "
-            "Never split work across multiple execute_python calls. "
+            "Never split work across multiple execute_python calls.\n"
+            "IMPORTANT: file_read(), file_write(), file_append(), and file_list() are globals "
+            "inside execute_python — call them to read/write/browse session files. "
+            "Files attached to a message are in remote storage, NOT the sandbox filesystem — "
+            "call file_read(path='...') to get their content, never try open() or import.\n"
             "Available functions (call these directly as globals):"
         )
         for tool_name, schema in effective_snapshot.items():

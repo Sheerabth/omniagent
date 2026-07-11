@@ -16,12 +16,13 @@ from mcp.server import Server
 from mcp.types import TextContent
 from mcp.types import Tool as McpTool
 
-from omniagent.api.models import MessageRecord
+from omniagent.api.models import FileRef, MessageRecord
 from omniagent.config import settings
 from omniagent.worker.harness._env import _load_env_file
 from omniagent.worker.harness.base import (
     EXECUTE_PYTHON_DESCRIPTION,
     HarnessAdapter,
+    embed_files,
     make_monty_executor,
 )
 from omniagent.worker.models import EventEmitter, ThinkingEvent, ToolExecutor, ToolSnapshot
@@ -53,6 +54,7 @@ class ClaudeAdapter(HarnessAdapter):
         tool_snapshot: dict[str, ToolSnapshot],
         model: str = "",
         tool_calls: list[dict[str, Any]] | None = None,
+        files: list[FileRef] | None = None,
     ) -> str:
         mcp_server = _build_mcp_server(
             tool_snapshot,
@@ -84,6 +86,12 @@ class ClaudeAdapter(HarnessAdapter):
         )
 
         prompt = _build_prompt_with_history(history)
+
+        # Embed files attached to the current turn.
+        if files:
+            file_text = embed_files(files)
+            if file_text:
+                prompt = prompt + "\n\n" + file_text
         await emit_event(ThinkingEvent(content="Starting Claude agent"))
 
         final_text = ""

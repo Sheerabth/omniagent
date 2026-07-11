@@ -30,7 +30,9 @@ logger = logging.getLogger(__name__)
 _CANCEL_MARKER = "[CANCELLED: previous response was stopped by the user before completing]"
 
 
-async def _complete_session(session_id: str, result: str, prior_count: int) -> None:
+async def _complete_session(
+    session_id: str, result: str, prior_count: int, files: list | None = None
+) -> None:
     """Append the assistant reply and decide whether to go idle or chain another turn.
 
     ``prior_count`` is the message count this turn started with. If the array
@@ -92,7 +94,9 @@ async def _complete_session(session_id: str, result: str, prior_count: int) -> N
             )
         else:
             assistant_json = json.dumps(
-                MessageRecord(role="assistant", content=result, timestamp=now).model_dump()
+                MessageRecord(
+                    role="assistant", content=result, files=files or [], timestamp=now
+                ).model_dump()
             )
             next_status = SessionStatus.PENDING if has_queued_input else SessionStatus.IDLE
             # Always keep langfuse_trace_id — idle sessions resume with next user
@@ -126,6 +130,7 @@ async def _handle_defer(
     result: str,
     history: list[MessageRecord],
     defer: DeferInfo,
+    files: list | None = None,
 ) -> None:
     """Persist the deferred turn's outcome and re-arm the session for wake-up.
 
@@ -192,7 +197,9 @@ async def _handle_defer(
             queued = current_messages[prior_count:]
             new_messages = current_messages[:prior_count]
             new_messages.append(
-                MessageRecord(role="assistant", content=result, timestamp=now).model_dump()
+                MessageRecord(
+                    role="assistant", content=result, files=files or [], timestamp=now
+                ).model_dump()
             )
             new_messages.extend(queued)
             new_messages.append(

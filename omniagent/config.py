@@ -70,6 +70,18 @@ class Settings(BaseSettings):
     langfuse_secret_key: str = ""
     langfuse_public_key: str = ""
 
+    # ── MinIO file storage ───────────────────────────────────────────────
+    omniagent_minio_endpoint: str = "localhost:9000"
+    omniagent_minio_access_key: str = "minioadmin"
+    omniagent_minio_secret_key: str = "minioadmin"
+    omniagent_minio_bucket: str = "omniagent"
+    omniagent_minio_secure: bool = False
+
+    # ── file limits ──────────────────────────────────────────────────────
+    omniagent_max_upload_size_mb: int = 100
+    omniagent_file_read_max_bytes: int = 10_485_760  # 10 MiB
+    omniagent_file_read_max_lines: int = 50_000
+
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",

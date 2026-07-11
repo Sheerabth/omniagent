@@ -111,12 +111,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     from omniagent.api import sse_hub
     from omniagent.config import settings
     from omniagent.migrations import run_migrations
+    from omniagent.storage import StorageClient
     from omniagent.worker.job import app as proc_app
 
     dsn = settings.database_url
     await run_migrations(dsn)
     await db.init_db(dsn)
     await _reconcile_stuck_sessions()
+
+    # Ensure MinIO bucket exists (no-op if already present).
+    try:
+        await StorageClient().ensure_bucket()
+    except Exception:
+        logger.warning("MinIO bucket check failed — file uploads will fail", exc_info=True)
+
     queue.set_session_fail_callback(_mark_session_failed)
     await sse_hub.start()
 

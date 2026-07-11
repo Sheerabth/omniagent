@@ -19,10 +19,10 @@ except ImportError as exc:
         "Verify LocalAgentConfig and policy import paths for the installed package version."
     ) from exc
 
-from omniagent.api.models import MessageRecord
+from omniagent.api.models import FileRef, MessageRecord
 from omniagent.config import settings
 from omniagent.worker.harness._env import _load_env_file
-from omniagent.worker.harness.base import HarnessAdapter, make_monty_executor
+from omniagent.worker.harness.base import HarnessAdapter, embed_files, make_monty_executor
 from omniagent.worker.models import (
     EventEmitter,
     MontyExecutor,
@@ -121,6 +121,7 @@ class AntigravityAdapter(HarnessAdapter):
         tool_snapshot: dict[str, ToolSnapshot],
         model: str = "",
         tool_calls: list[dict[str, Any]] | None = None,
+        files: list[FileRef] | None = None,
     ) -> str:
         if use_monty:
             tools = [self._build_monty_tool(tool_snapshot, tool_executor, emit_event)]
@@ -142,6 +143,12 @@ class AntigravityAdapter(HarnessAdapter):
             (m.content for m in reversed(history) if m.role == "user"),
             "",
         )
+
+        # Embed files attached to the current turn.
+        if files:
+            file_text = embed_files(files)
+            if file_text:
+                latest_user = file_text + "\n\n" + latest_user
 
         await emit_event(ThinkingEvent(content="Starting Antigravity agent"))
 

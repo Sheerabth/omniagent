@@ -48,6 +48,24 @@ NATIVE_TOOL_DESCRIPTIONS: dict[str, str] = {
         "Prefer this over defer_turn when the API gives you an ISO timestamp. "
         "After calling, write a brief status — the next turn receives a [RESUME] message."
     ),
+    "native.file_read": (
+        "Read a file from session storage. Use offset/limit (head), tail (last N lines), "
+        "or grep (lines containing substring) to extract exactly what you need. "
+        "Text files return text; binary files return base64. "
+        "Capped at 10MB / 50000 lines — use surgical params to avoid truncation."
+    ),
+    "native.file_write": (
+        "Write content to a file in session storage. Overwrites if the file already exists. "
+        "Content is text — binary data should be base64-encoded."
+    ),
+    "native.file_append": (
+        "Append content to an existing file in session storage. "
+        "Creates the file if it doesn't exist."
+    ),
+    "native.file_list": (
+        "List files in session storage. Use prefix to filter by subdirectory "
+        "(e.g. 'reports/' for files under the reports directory)."
+    ),
 }
 
 # Input schemas for each native tool (used by adapters to expose the tools to the LLM)
@@ -130,5 +148,65 @@ NATIVE_TOOL_SCHEMAS: dict[str, dict] = {
             }
         },
         "required": ["iso_timestamp"],
+    },
+    "native.file_read": {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "File path within session storage."},
+            "offset": {
+                "type": "integer",
+                "description": "Start reading from this line number (0-indexed).",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Max lines to return.",
+            },
+            "tail": {
+                "type": "integer",
+                "description": "Return last N lines of the file.",
+            },
+            "grep": {
+                "type": "string",
+                "description": "Return only lines containing this substring.",
+            },
+        },
+        "required": ["path"],
+    },
+    "native.file_write": {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "File path within session storage."},
+            "content": {"type": "string", "description": "Text content to write."},
+            "content_type": {
+                "type": "string",
+                "description": "MIME type, e.g. text/html, application/json. Default: text/plain.",
+            },
+        },
+        "required": ["path", "content"],
+    },
+    "native.file_append": {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "File path within session storage."},
+            "content": {"type": "string", "description": "Text content to append."},
+            "content_type": {
+                "type": "string",
+                "description": "MIME type, e.g. text/html, application/json. Default: text/plain.",
+            },
+        },
+        "required": ["path", "content"],
+    },
+    "native.file_list": {
+        "type": "object",
+        "properties": {
+            "prefix": {
+                "type": "string",
+                "description": "Filter files by path prefix (e.g. 'reports/').",
+            },
+            "max_results": {
+                "type": "integer",
+                "description": "Max files to return (default 200).",
+            },
+        },
     },
 }

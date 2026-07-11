@@ -15,10 +15,10 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
-from omniagent.api.models import MessageRecord
+from omniagent.api.models import FileRef, MessageRecord
 from omniagent.config import settings
 from omniagent.worker.harness._env import _load_env_file
-from omniagent.worker.harness.base import HarnessAdapter, make_monty_executor
+from omniagent.worker.harness.base import HarnessAdapter, embed_files, make_monty_executor
 from omniagent.worker.models import EventEmitter, ThinkingEvent, ToolExecutor, ToolSnapshot
 
 logger = logging.getLogger(__name__)
@@ -48,6 +48,7 @@ class PydanticAIAdapter(HarnessAdapter):
         tool_snapshot: dict[str, ToolSnapshot],
         model: str = "",
         tool_calls: list[dict[str, Any]] | None = None,
+        files: list[FileRef] | None = None,
     ) -> str:
         # Load .env.pydantic every run — edits take effect next job, no restart.
         os.environ.update(_load_env_file(settings.pydantic_env_file))
@@ -77,6 +78,12 @@ class PydanticAIAdapter(HarnessAdapter):
             (m.content for m in reversed(history) if m.role == "user"),
             "",
         )
+
+        # Embed files attached to the current turn.
+        if files:
+            file_text = embed_files(files)
+            if file_text:
+                latest_user = file_text + "\n\n" + latest_user
 
         await emit_event(ThinkingEvent(content="Starting Pydantic AI agent"))
 

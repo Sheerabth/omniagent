@@ -14,11 +14,12 @@ import procrastinate
 from langfuse import Langfuse, propagate_attributes
 from procrastinate import PsycopgConnector
 
-from omniagent.api.models import MessageRecord
+from omniagent.api.models import FileRef, MessageRecord
 from omniagent.config import settings
 from omniagent.constants import EventType, HarnessName, SessionStatus
 from omniagent.db import get_conn
 from omniagent.logging_config import trace_id_var
+from omniagent.storage import StorageClient
 from omniagent.worker.config import _fetch_session_config
 from omniagent.worker.events import _emit_event
 from omniagent.worker.lifecycle import _complete_session, _handle_defer
@@ -117,14 +118,28 @@ async def run_agent_job(session_id: str) -> None:
     async def emit(event: BaseEvent) -> None:
         await _emit_event(session_id, event)
 
+    storage = StorageClient()
+
     native_ctx = NativeToolContext(
         session_id=session_id,
         agent_name=config.agent_name,
         harness=harness,
         tool_snapshot=tool_snapshot,
         defer_state={},
+        storage=storage,
     )
     native_exec = NativeToolExecutor(native_ctx, emit)
+
+    # Files attached to the current user turn — last user message's files field.
+    current_files: list[FileRef] = []
+    for m in reversed(history):
+        if m.role == "user":
+            current_files = m.files
+            break
+
+    # Accumulate file_write / file_append outputs so we can attach FileRefs
+    # to the assistant MessageRecord after the run completes.
+    _generated_files: list[dict[str, Any]] = []
 
     async def tool_exec(tool_name: str, input_data: dict[str, Any]) -> dict[str, Any]:
         _lf_span = (
@@ -142,6 +157,14 @@ async def run_agent_job(session_id: str) -> None:
         if _lf_span:
             _safe_lf(_lf_span.update, output=result, _warning="langfuse span end failed")
             _safe_lf(_lf_span.end, _warning="langfuse span end failed")
+        if (
+            result
+            and isinstance(result, dict)
+            and result.get("path")
+            and result.get("ok")
+            and tool_name in ("native.file_write", "native.file_append")
+        ):
+            _generated_files.append(result)
         return result
 
     # ── Langfuse trace setup ─────────────────────────────────────────────
@@ -267,6 +290,7 @@ async def run_agent_job(session_id: str) -> None:
                     tool_snapshot=tool_snapshot,
                     model=model,
                     tool_calls=tool_calls,
+                    files=current_files or None,
                 )
                 if generation:
                     _safe_lf(
@@ -282,11 +306,20 @@ async def run_agent_job(session_id: str) -> None:
                 if _langfuse:
                     _safe_lf(_langfuse.flush, _warning="langfuse flush failed")
 
+                # Build FileRefs from generated files (file_write / file_append outputs).
+                gen_refs: list[FileRef] = []
+                for gf in _generated_files:
+                    try:
+                        ref = await storage.stat(session_id, gf["path"])
+                        gen_refs.append(ref)
+                    except Exception:
+                        pass
+
                 if defer := native_ctx.defer_state.get("info"):
-                    await _handle_defer(session_id, result, history, defer)
+                    await _handle_defer(session_id, result, history, defer, files=gen_refs)
                     outcome = SessionStatus.DEFERRED
                 else:
-                    await _complete_session(session_id, result, len(history))
+                    await _complete_session(session_id, result, len(history), files=gen_refs)
                     outcome = "completed"
                 logger.info(
                     "run_agent_job finished",

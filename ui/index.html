@@ -127,6 +127,16 @@
   .msg.assistant .msg-bubble { background: var(--bg-1); color: var(--text); border: 1px solid var(--border); border-bottom-left-radius: 2px; }
   .msg-meta { font-size: 11px; color: var(--text-ghost); margin-top: 4px; padding: 0 4px; }
   .msg.user .msg-meta { text-align: right; }
+  .file-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .file-chip { display: inline-flex; align-items: center; gap: 4px; background: #2a2a2a; border: 1px solid #444; border-radius: 6px; padding: 4px 8px; font-size: 12px; color: #aaa; }
+  .file-chip .file-name { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .file-chip .file-size { color: #666; font-size: 10px; }
+  .file-chip .file-remove { cursor: pointer; color: #888; margin-left:2px; font-size:14px; line-height:1; }
+  .file-chip .file-remove:hover { color: #c0392b; }
+  .file-chip a { color: #8ab4f8; text-decoration: none; }
+  .file-chip a:hover { text-decoration: underline; }
+  .file-upload-btn { background: var(--bg-2); border: 1px dashed #555; color: #888; cursor: pointer; border-radius: 6px; padding: 6px 10px; font-size: 18px; line-height: 1; flex-shrink: 0; }
+  .file-upload-btn:hover { border-color: var(--accent); color: var(--accent); }
   .thinking-indicator { align-self: flex-start; display: flex; align-items: center; gap: 6px; color: var(--text-ghost); font-size: 13px; padding: 4px 0; }
   .dots { display: flex; gap: 4px; }
   .dots span { width: 6px; height: 6px; border-radius: 50%; background: #444; animation: blink 1.2s infinite; }
@@ -374,10 +384,13 @@
     </div>
   </div>
   <div id="chat-input-row">
+    <input type="file" id="file-input" multiple style="display:none" onchange="onFilesSelected(event)">
+    <button class="file-upload-btn" title="Attach files" onclick="document.getElementById('file-input').click()">📎</button>
     <textarea id="chat-input" placeholder="Type a message…" onkeydown="chatKeydown(event)" rows="1"></textarea>
     <button id="chat-stop" onclick="chatStop()" style="display:none;background:#c0392b;color:#fff">Stop</button>
     <button id="chat-send" onclick="chatSend()" disabled>Send</button>
   </div>
+  <div id="pending-files" class="file-chips" style="padding:0 var(--sp-5) 8px;display:none"></div>
 </div>
 
 <!-- SCHEDULES -->
@@ -485,13 +498,14 @@ let currentNamespace = null;
 let currentTab = 'tools';
 
 // Auth via session cookie — no API key in HTML source.
-function headers() {
-  return { 'Content-Type': 'application/json' };
+function headers(ct) {
+  if (ct === false) return {};  // multipart — browser sets Content-Type
+  return { 'Content-Type': ct || 'application/json' };
 }
 
 async function api(method, path, body) {
   const r = await fetch(path, {
-    method, headers: headers(),
+    method, headers: headers('application/json'),
     body: body ? JSON.stringify(body) : undefined,
   });
   if (r.status === 401) { location.href = '/login'; return null; }
@@ -1221,6 +1235,7 @@ let chatDeferred = false;
 // can be spliced in before them instead of just tacked onto the end.
 let _confirmedCount = 0;
 let _pendingUserNodes = [];
+let _pendingFiles = [];  // raw File objects — uploaded on send, not on selection
 
 function updateStopVisibility() {
   const btn = document.getElementById('chat-stop');
@@ -1387,17 +1402,89 @@ function chatKeydown(e) {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); chatSend(); }
 }
 
+// ── file upload helpers ──────────────────────────────────────────────────
+
+function formatSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / 1048576).toFixed(1) + ' MB';
+}
+
+function renderFileChips(files, removable, idxOffset) {
+  // files: raw File objects (pending) or {name,size,path,content_type} refs (sent)
+  if (!files || !files.length) return '';
+  idxOffset = idxOffset || 0;
+  var html = '<div class="file-chips">';
+  files.forEach(function(f, i) {
+    var name = escHtml(f.name);
+    var sz = f.size ? formatSize(f.size) : '';
+    html += '<div class="file-chip">';
+    if (removable) {
+      html += name;
+      if (sz) html += ' <span class="file-size">' + sz + '</span>';
+      html += ' <span class="file-remove" onclick="removePendingFile(' + (idxOffset + i) + ')">&times;</span>';
+    } else {
+      html += '<a href="/sessions/' + chatSessionId + '/files/' + encodeURIComponent(f.path) + '" target="_blank">' + name + '</a>';
+      if (sz) html += ' <span class="file-size">' + sz + '</span>';
+    }
+    html += '</div>';
+  });
+  html += '</div>';
+  return html;
+}
+
+function renderPendingFiles() {
+  var el = document.getElementById('pending-files');
+  el.innerHTML = renderFileChips(_pendingFiles, true, 0);
+  el.style.display = _pendingFiles.length ? 'flex' : 'none';
+}
+
+function onFilesSelected(event) {
+  var files = event.target.files;
+  if (!files.length) return;
+  for (var i = 0; i < files.length; i++) {
+    _pendingFiles.push(files[i]);
+  }
+  event.target.value = '';
+  renderPendingFiles();
+}
+
+function removePendingFile(idx) {
+  _pendingFiles.splice(idx, 1);
+  renderPendingFiles();
+}
+
 async function chatSend() {
   const input = document.getElementById('chat-input');
   const text = input.value.trim();
   if (!text || !chatSessionId) return;
+
+  // Upload pending files to session storage, collect refs.
+  const pending = [..._pendingFiles];
+  const filePaths = [];
+  const optimisticFiles = [];
+  for (const f of pending) {
+    try {
+      const formData = new FormData();
+      formData.append('file', f);
+      const r = await fetch('/sessions/' + chatSessionId + '/files', {
+        method: 'POST', body: formData,  // no Content-Type — browser sets multipart boundary
+      });
+      if (!r.ok) { const d = await r.json(); throw new Error(d.detail || 'upload failed'); }
+      const ref = await r.json();
+      filePaths.push(ref.path);
+      optimisticFiles.push(ref);
+    } catch(e) { toast('Upload ' + f.name + ': ' + e.message, false); }
+  }
+  _pendingFiles = [];
+  renderPendingFiles();
 
   input.value = '';
   // Rendered immediately for instant feedback, even while a prior turn is
   // still running — tracked in _pendingUserNodes so the reply that turn
   // produces (which lands ahead of this message in the DB array — see
   // _complete_session in job.py) gets spliced in before it, not after.
-  _pendingUserNodes.push(appendMsg('user', text));
+  _pendingUserNodes.push(appendMsg('user', text, optimisticFiles));
   // Keep the dots pinned below whatever's newest — otherwise a message sent
   // while a prior turn's still in flight lands after them, reading as if
   // the agent is still working on THIS message instead of the earlier one.
@@ -1409,7 +1496,7 @@ async function chatSend() {
     chatRunId++;
     thinkingEl = appendThinking();
     try {
-      await api('POST', '/sessions/' + chatSessionId + '/resume', { message: text });
+      await api('POST', '/sessions/' + chatSessionId + '/resume', { message: text, files: filePaths });
       const s = allSessions.find(s => s.id === chatSessionId);
       if (s) { s.status = 'pending'; renderSessions(); }
       streamSession(chatSessionId);
@@ -1432,7 +1519,7 @@ async function chatSend() {
     setChatBusy(true);
   }
   try {
-    await api('POST', '/sessions/' + chatSessionId + '/run', { prompt: text });
+    await api('POST', '/sessions/' + chatSessionId + '/run', { prompt: text, files: filePaths });
     if (!wasBusy) {
       const s = allSessions.find(s => s.id === chatSessionId);
       if (s) { s.status = 'pending'; renderSessions(); }
@@ -1535,8 +1622,7 @@ function streamSession(sessionId) {
     }
 
     if (ev.type === 'error') {
-      chatSSE.close();
-      chatSSE = null;
+      if (chatSSE) { chatSSE.close(); chatSSE = null; }
       removeThinking();
       setChatBusy(false);
       setChatDeferred(false);
@@ -1546,8 +1632,7 @@ function streamSession(sessionId) {
     }
 
     if (ev.final) {
-      chatSSE.close();
-      chatSSE = null;
+      if (chatSSE) { chatSSE.close(); chatSSE = null; }
       removeThinking();
       setChatBusy(false);
       setChatDeferred(ev.type === 'deferred');
@@ -1577,22 +1662,24 @@ function streamSession(sessionId) {
   chatSSE.onerror = () => {
     removeThinking();
     appendMsg('assistant', '⚠ Connection lost. Session may still be running.');
-    chatSSE.close();
+    if (chatSSE) { chatSSE.close(); chatSSE = null; }
     setChatBusy(false);
     setChatDeferred(false);
   };
 }
 
-function buildMsgNode(role, text) {
+function buildMsgNode(role, text, files) {
   const div = document.createElement('div');
   div.className = 'msg ' + role;
-  div.innerHTML = `<div class="msg-bubble">${role === 'assistant' ? marked.parse(text) : escHtml(text)}</div>`;
+  const body = role === 'assistant' ? marked.parse(text) : escHtml(text);
+  const fileHtml = (files && files.length) ? renderFileChips(files, false) : '';
+  div.innerHTML = `<div class="msg-bubble">${body}${fileHtml}</div>`;
   return div;
 }
 
-function appendMsg(role, text) {
+function appendMsg(role, text, files) {
   const msgs = document.getElementById('chat-messages');
-  const div = buildMsgNode(role, text);
+  const div = buildMsgNode(role, text, files);
   msgs.appendChild(div);
   msgs.scrollTop = msgs.scrollHeight;
   return div;
@@ -1611,19 +1698,11 @@ function _syncMessages(status) {
   for (let i = _confirmedCount; i < visible.length; i++) {
     const m = visible[i];
     if (m.role === 'assistant') {
-      // This reply answers the OLDEST pending send (_pendingUserNodes[0]),
-      // which is always already on screen — so the reply belongs right
-      // after it, i.e. before whichever pending send comes next. Anchoring
-      // to [0] itself (and shifting eagerly on the 'user' branch below)
-      // would place it ahead of the message it's actually answering. When
-      // there's no next pending send, fall back to the dots (still on
-      // screen at this point — removeThinking() runs after this) instead
-      // of the raw end, or the reply would land below them.
       const anchor = _pendingUserNodes[1] || thinkingEl || null;
-      msgs.insertBefore(buildMsgNode(m.role, m.content), anchor);
+      msgs.insertBefore(buildMsgNode(m.role, m.content, m.files), anchor);
       _pendingUserNodes.shift();
     } else if (!_pendingUserNodes.length) {
-      appendMsg(m.role, m.content); // not one of ours (other tab, etc.)
+      appendMsg(m.role, m.content, m.files); // not one of ours (other tab, etc.)
     }
     // else: one of our own optimistic sends, already rendered — nothing to do
     // until the reply that answers it arrives (handled above).

@@ -2,11 +2,12 @@ import json
 import uuid
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Depends, HTTPException, UploadFile
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from omniagent.api.auth import require_scope
 from omniagent.api.models import (
+    FileRef,
     MessageRecord,
     ResumeRequest,
     RunRequest,
@@ -33,8 +34,11 @@ from omniagent.api.queries import (
 from omniagent.config import settings
 from omniagent.constants import NotifyType, SessionStatus, session_channel
 from omniagent.db import get_conn
+from omniagent.storage import StorageClient
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
+
+_storage = StorageClient()
 
 
 @router.post("", response_model=SessionRecord, status_code=201)
@@ -83,9 +87,20 @@ async def run_session(
     durably and picked up by the worker's catch-up check when the current
     turn completes, instead of being rejected. See job.py:_complete_session.
     """
+    # Resolve file paths to FileRef metadata for the message record.
+    file_refs: list[FileRef] = []
+    if body.files:
+        for fp in body.files:
+            try:
+                ref = await _storage.stat(str(session_id), fp)
+                file_refs.append(ref)
+            except Exception as exc:
+                raise HTTPException(404, detail=f"File not found in session: {fp}") from exc
+
     new_message = MessageRecord(
         role="user",
         content=body.prompt,
+        files=file_refs,
         timestamp=datetime.now(UTC).isoformat(),
     ).model_dump()
 
@@ -136,10 +151,22 @@ async def resume_session(
 
         messages = session["messages"] or []
         resume_text = f"[RESUME: {body.message}]" if body.message else "[RESUME: Turn resumed.]"
+
+        # Resolve file paths for the resume message.
+        file_refs: list[FileRef] = []
+        if body.files:
+            for fp in body.files:
+                try:
+                    ref = await _storage.stat(str(session_id), fp)
+                    file_refs.append(ref)
+                except Exception as exc:
+                    raise HTTPException(404, detail=f"File not found in session: {fp}") from exc
+
         messages.append(
             MessageRecord(
                 role="user",
                 content=resume_text,
+                files=file_refs,
                 timestamp=datetime.now(UTC).isoformat(),
             ).model_dump()
         )
@@ -200,6 +227,15 @@ async def cancel_session(session_id: uuid.UUID, _=Depends(require_scope("session
 async def delete_session(session_id: uuid.UUID, _=Depends(require_scope("sessions:write"))) -> None:
     async with get_conn() as conn:
         await conn.execute(delete_session_by_id, {"id": session_id})
+    # Cascade: remove all session files from MinIO (best-effort, log failures).
+    try:
+        await _storage.delete_prefix(str(session_id))
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "Failed to delete MinIO files for session %s", session_id, exc_info=True
+        )
 
 
 @router.get("/{session_id}/status", response_model=SessionStatusResponse)
@@ -228,3 +264,72 @@ async def get_session_status(
         toolbox_versions=session["toolbox_versions"] or {},
         tool_refs=session["tool_refs"] or [],
     )
+
+
+# ── File endpoints ─────────────────────────────────────────────────────────
+
+
+@router.post("/{session_id}/files", response_model=FileRef, status_code=201)
+async def upload_file(
+    session_id: uuid.UUID,
+    file: UploadFile,
+    _=Depends(require_scope("sessions:write")),
+) -> FileRef:
+    """Upload a file to session storage. Max size controlled by config."""
+    if not file.filename:
+        raise HTTPException(400, detail="filename required")
+    data = await file.read()
+    ref = await _storage.upload(
+        str(session_id),
+        file.filename,
+        data,
+        file.content_type or "application/octet-stream",
+    )
+    ref.updated_at = datetime.now(UTC).isoformat()
+    return ref
+
+
+@router.get("/{session_id}/files", response_model=list[FileRef])
+async def list_files(
+    session_id: uuid.UUID,
+    prefix: str = "",
+    max_results: int = 200,
+    _=Depends(require_scope("sessions:read")),
+) -> list[FileRef]:
+    """List files in session storage. Optional prefix filter."""
+    return await _storage.list_objects(str(session_id), prefix=prefix, max_results=max_results)
+
+
+@router.get("/{session_id}/files/{path:path}")
+async def download_file(
+    session_id: uuid.UUID,
+    path: str,
+    _=Depends(require_scope("sessions:read")),
+) -> StreamingResponse:
+    """Download a file from session storage."""
+    import io
+
+    try:
+        data = await _storage.download(str(session_id), path)
+        ref = await _storage.stat(str(session_id), path)
+    except Exception as exc:
+        raise HTTPException(404, detail=f"File not found: {path}") from exc
+
+    return StreamingResponse(
+        io.BytesIO(data),
+        media_type=ref.content_type,
+        headers={"Content-Disposition": f'inline; filename="{ref.name}"'},
+    )
+
+
+@router.delete("/{session_id}/files/{path:path}", status_code=204)
+async def delete_file(
+    session_id: uuid.UUID,
+    path: str,
+    _=Depends(require_scope("sessions:write")),
+) -> None:
+    """Delete a file from session storage."""
+    try:
+        await _storage.delete(str(session_id), path)
+    except Exception as exc:
+        raise HTTPException(404, detail=f"File not found: {path}") from exc

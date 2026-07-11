@@ -117,17 +117,30 @@ class SessionRecord(BaseModel):
     _parse_toolbox_versions = field_validator("toolbox_versions", mode="before")(parse_jsonb)
 
 
+class FileRef(BaseModel):
+    """Lightweight file metadata — points into MinIO session storage."""
+
+    path: str  # relative within session, e.g. "report.pdf"
+    name: str  # filename
+    content_type: str  # MIME type
+    size: int  # bytes
+    updated_at: str  # ISO timestamp
+
+
 class RunRequest(BaseModel):
     prompt: str
+    files: list[str] = []  # paths of pre-uploaded files to attach to this turn
 
 
 class ResumeRequest(BaseModel):
     message: str = ""  # injected as [RESUME: <message>] user turn
+    files: list[str] = []  # paths of pre-uploaded files to attach
 
 
 class MessageRecord(BaseModel):
     role: str
     content: str
+    files: list[FileRef] = []  # files attached when this message was sent
     timestamp: str
 
 
