@@ -9,15 +9,14 @@ from omniagent.api.auth import require_scope
 from omniagent.api.models import ScheduleCreate, ScheduleRecord, ScheduleUpdate
 from omniagent.api.queries import (
     build_update_schedule,
-    cancel_sessions_for_schedule,
     delete_schedule_by_id,
+    delete_sessions_by_schedule,
     insert_schedule,
     select_orphaned_scheduled_sessions,
     select_schedule_by_id,
     select_schedules,
     select_sessions_by_schedule,
 )
-from omniagent.constants import SessionStatus
 from omniagent.crypto import encrypt_auth_context
 from omniagent.db import get_conn
 
@@ -141,12 +140,5 @@ async def list_schedule_runs(
 @router.delete("/{schedule_id}", status_code=204)
 async def delete_schedule(schedule_id: uuid.UUID, _=Depends(require_scope("agents:write"))) -> None:
     async with get_conn() as conn, conn.begin():
-        await conn.execute(
-            cancel_sessions_for_schedule,
-            {
-                "status": SessionStatus.CANCELLED,
-                "schedule_id": schedule_id,
-                "where_status": SessionStatus.PENDING,
-            },
-        )
+        await conn.execute(delete_sessions_by_schedule, {"schedule_id": schedule_id})
         await conn.execute(delete_schedule_by_id, {"id": schedule_id})

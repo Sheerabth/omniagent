@@ -28,7 +28,7 @@ now_expr = func.now()
 
 # Lock session + fetch status + messages for turn execution
 lock_session = (
-    select(sessions.c.status, sessions.c.messages)
+    select(sessions.c.status, sessions.c.messages, sessions.c.tool_calls)
     .where(sessions.c.id == bindparam("session_id"))
     .with_for_update()
 )
@@ -142,7 +142,7 @@ select_toolbox_by_name_version = select(toolboxes).where(
     toolboxes.c.version == bindparam("version"),
 )
 
-select_tools_by_names = select(tools).where(tools.c.name == bindparam("names"))
+select_tools_by_names = select(tools).where(tools.c.name.in_(bindparam("names", expanding=True)))
 
 select_namespace_auth_by_namespace = select(
     namespace_auth.c.namespace,

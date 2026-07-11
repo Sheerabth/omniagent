@@ -52,6 +52,7 @@ class ClaudeAdapter(HarnessAdapter):
         use_monty: bool,
         tool_snapshot: dict[str, ToolSnapshot],
         model: str = "",
+        tool_calls: list[dict[str, Any]] | None = None,
     ) -> str:
         mcp_server = _build_mcp_server(
             tool_snapshot,

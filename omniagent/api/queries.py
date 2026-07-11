@@ -232,6 +232,10 @@ select_orphaned_scheduled_sessions = (
     .limit(200)
 )
 
+delete_sessions_by_schedule = delete(sessions).where(
+    sessions.c.schedule_id == bindparam("schedule_id")
+)
+
 select_schedule_by_id = select(
     schedules.c.id,
     schedules.c.agent_name,

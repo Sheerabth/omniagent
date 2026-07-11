@@ -25,7 +25,7 @@ from omniagent.db import get_conn
 from omniagent.worker.auth import _get_oauth_token, _get_oidc_token
 from omniagent.worker.http import _get_http_client
 from omniagent.worker.models import EventEmitter, ToolCallEvent, ToolResultEvent, ToolSnapshot
-from omniagent.worker.native import NATIVE_TOOL_DESCRIPTIONS, DeferInfo
+from omniagent.worker.native import DeferInfo
 from omniagent.worker.queries import (
     cancel_pending_sessions_by_schedule,
     delete_memory,
@@ -171,17 +171,15 @@ class NativeToolExecutor:
         self._emit = emit
 
     async def execute(self, tool_name: str, input_data: dict[str, Any]) -> Any:
-        """Dispatch to the appropriate native handler or raise."""
-        if tool_name not in NATIVE_TOOL_DESCRIPTIONS:
-            raise RuntimeError(f"unknown_native_tool:{tool_name}")
+        """Dispatch native tools to handlers, everything else to HTTP executor."""
+        if tool_name in _NATIVE_HANDLERS:
+            handler = getattr(self, _NATIVE_HANDLERS[tool_name])
+            return await handler(input_data)
 
-        # Resolve external tool fallback (non-native tools go through HTTP executor)
-        if tool_name not in _NATIVE_HANDLERS:
+        if tool_name in self._ctx.tool_snapshot:
             return await self._external_tool(tool_name, input_data)
 
-        handler_name = _NATIVE_HANDLERS[tool_name]
-        handler = getattr(self, handler_name)
-        return await handler(input_data)
+        raise RuntimeError(f"unknown_tool:{tool_name}")
 
     async def _external_tool(self, tool_name: str, input_data: dict[str, Any]) -> dict[str, Any]:
         """Fallback: execute a non-native tool via the HTTP executor."""

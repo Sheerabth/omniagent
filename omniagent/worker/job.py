@@ -23,7 +23,7 @@ from omniagent.worker.config import _fetch_session_config
 from omniagent.worker.events import _emit_event
 from omniagent.worker.lifecycle import _complete_session, _handle_defer
 from omniagent.worker.models import BaseEvent, ErrorEvent, SystemPromptEvent
-from omniagent.worker.native import NATIVE_TOOL_DESCRIPTIONS, DeferInfo
+from omniagent.worker.native import NATIVE_TOOL_DESCRIPTIONS
 from omniagent.worker.prompts import _build_system_prompt, _make_native_tool_snapshot
 from omniagent.worker.queries import (
     lock_session,
@@ -81,6 +81,7 @@ async def run_agent_job(session_id: str) -> None:
             logger.info("run_agent_job: session %s cancelled, skipping", session_id)
             return
         history = [MessageRecord.model_validate(m) for m in (row["messages"] or [])]
+        tool_calls = row["tool_calls"] or []
         if row["status"] in (SessionStatus.PENDING, SessionStatus.DEFERRED):
             await conn.execute(
                 set_session_status,
@@ -97,9 +98,6 @@ async def run_agent_job(session_id: str) -> None:
     native_tools = {name: _make_native_tool_snapshot(name) for name in NATIVE_TOOL_DESCRIPTIONS}
     tool_snapshot = {**config.tool_snapshot, **native_tools}
     system_prompt = _build_system_prompt(config, extra_tools=native_tools)
-
-    # Shared defer state — set by native.defer_turn / native.defer_turn_until
-    _defer_state: dict[str, DeferInfo] = {}
 
     # Langfuse trace — best-effort, must never block the AI flow.
     # Last real user message (skip [RESUME] and [CANCELLED] markers).
@@ -124,7 +122,7 @@ async def run_agent_job(session_id: str) -> None:
         agent_name=config.agent_name,
         harness=harness,
         tool_snapshot=tool_snapshot,
-        defer_state=_defer_state,
+        defer_state={},
     )
     native_exec = NativeToolExecutor(native_ctx, emit)
 
@@ -268,6 +266,7 @@ async def run_agent_job(session_id: str) -> None:
                     use_monty=use_monty,
                     tool_snapshot=tool_snapshot,
                     model=model,
+                    tool_calls=tool_calls,
                 )
                 if generation:
                     _safe_lf(
@@ -283,7 +282,7 @@ async def run_agent_job(session_id: str) -> None:
                 if _langfuse:
                     _safe_lf(_langfuse.flush, _warning="langfuse flush failed")
 
-                if defer := _defer_state.get("info"):
+                if defer := native_ctx.defer_state.get("info"):
                     await _handle_defer(session_id, result, history, defer)
                     outcome = SessionStatus.DEFERRED
                 else:

@@ -90,6 +90,7 @@ class HarnessAdapter(ABC):
         use_monty: bool,
         tool_snapshot: dict[str, ToolSnapshot],
         model: str = "",
+        tool_calls: list[dict[str, Any]] | None = None,
     ) -> str:
         """Run agent loop. Returns final text response."""
         ...

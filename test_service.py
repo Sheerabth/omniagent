@@ -2,10 +2,36 @@
 OpenAPI spec available at: http://localhost:8001/openapi.json
 
 Auth test credentials:
-  bearer token : test-bearer-secret
-  api key      : test-api-key
-  basic        : admin / test-pass
-  oauth2       : client_id=test-client, client_secret=test-secret
+
+  ┌──────────────┬─────────────────────────────────────────────────────────┬──────────────────────────────────┐
+  │ Scheme       │ Credentials                                             │ Endpoints                        │
+  ├──────────────┼─────────────────────────────────────────────────────────┼──────────────────────────────────┤
+  │ Bearer       │ token: test-bearer-secret                               │ /weather, /user/profile,         │
+  │              │                                                         │ /user/profile/oidc               │
+  ├──────────────┼─────────────────────────────────────────────────────────┼──────────────────────────────────┤
+  │ API key      │ header: X-API-Key: test-api-key                         │ /uv                              │
+  │ (header)     │                                                         │                                  │
+  ├──────────────┼─────────────────────────────────────────────────────────┼──────────────────────────────────┤
+  │ API key      │ query: ?api_key=test-api-key                            │ /city                            │
+  │ (query)      │                                                         │                                  │
+  ├──────────────┼─────────────────────────────────────────────────────────┼──────────────────────────────────┤
+  │ Basic        │ user: admin, pass: test-pass                            │ /flight                          │
+  ├──────────────┼─────────────────────────────────────────────────────────┼──────────────────────────────────┤
+  │ OAuth2       │ client_id: test-client, client_secret: test-secret      │ POST /oauth/token                │
+  │ (client_creds│ token: oauth2-issued-token                              │ → /user/profile                  │
+  │ )            │                                                         │                                  │
+  ├──────────────┼─────────────────────────────────────────────────────────┼──────────────────────────────────┤
+  │ OAuth2       │ refresh_token: test-refresh-token                       │ POST /oauth/token                │
+  │ (refresh)    │ token: oauth2-issued-token                              │ → /user/profile                  │
+  ├──────────────┼─────────────────────────────────────────────────────────┼──────────────────────────────────┤
+  │ OpenID       │ discovery: /.well-known/openid-configuration            │ POST /oauth/token                │
+  │ Connect      │ client_id: test-client, client_secret: test-secret      │ → /user/profile/oidc             │
+  │              │ token: oauth2-issued-token                              │                                  │
+  ├──────────────┼─────────────────────────────────────────────────────────┼──────────────────────────────────┤
+  │ None         │ —                                                       │ /clothing, /currency/convert,    │
+  │              │                                                         │ /weather/daily, /weather/forecast│
+  │              │                                                         │ /weather/alert                   │
+  └──────────────┴─────────────────────────────────────────────────────────┴──────────────────────────────────┘
 """
 
 import time

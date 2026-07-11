@@ -120,6 +120,7 @@ class AntigravityAdapter(HarnessAdapter):
         use_monty: bool,
         tool_snapshot: dict[str, ToolSnapshot],
         model: str = "",
+        tool_calls: list[dict[str, Any]] | None = None,
     ) -> str:
         if use_monty:
             tools = [self._build_monty_tool(tool_snapshot, tool_executor, emit_event)]

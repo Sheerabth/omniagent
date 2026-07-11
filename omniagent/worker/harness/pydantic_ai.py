@@ -6,7 +6,14 @@ import os
 from typing import Any
 
 from pydantic_ai import Agent, Tool
-from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
+from pydantic_ai.messages import (
+    ModelRequest,
+    ModelResponse,
+    TextPart,
+    ToolCallPart,
+    ToolReturnPart,
+    UserPromptPart,
+)
 
 from omniagent.api.models import MessageRecord
 from omniagent.config import settings
@@ -40,6 +47,7 @@ class PydanticAIAdapter(HarnessAdapter):
         use_monty: bool,
         tool_snapshot: dict[str, ToolSnapshot],
         model: str = "",
+        tool_calls: list[dict[str, Any]] | None = None,
     ) -> str:
         # Load .env.pydantic every run — edits take effect next job, no restart.
         os.environ.update(_load_env_file(settings.pydantic_env_file))
@@ -64,7 +72,7 @@ class PydanticAIAdapter(HarnessAdapter):
             tools=tools,
         )
 
-        message_history = _build_history(history)
+        message_history = _build_history(history, tool_calls or [])
         latest_user = next(
             (m.content for m in reversed(history) if m.role == "user"),
             "",
@@ -93,8 +101,8 @@ def _make_tool_fn(
 def _build_tools(
     tool_snapshot: dict[str, ToolSnapshot],
     tool_executor: ToolExecutor,
-) -> list[Any]:
-    tools: list[Any] = []
+) -> list[Tool[Any]]:
+    tools: list[Tool[Any]] = []
     for name, schema in tool_snapshot.items():
         tools.append(
             Tool.from_schema(
@@ -107,11 +115,23 @@ def _build_tools(
     return tools
 
 
-def _build_history(history: list[MessageRecord]) -> list[ModelRequest | ModelResponse]:
+def _build_history(
+    history: list[MessageRecord], tool_calls: list[dict[str, Any]]
+) -> list[ModelRequest | ModelResponse]:
     messages: list[ModelRequest | ModelResponse] = []
     for m in history:
         if m.role == "user":
             messages.append(ModelRequest(parts=[UserPromptPart(content=m.content)]))
         elif m.role == "assistant":
             messages.append(ModelResponse(parts=[TextPart(content=m.content)]))
+
+    # Weave previous tool calls/results into the history as structured messages
+    # so the AI sees its prior tool interactions and doesn't re-trigger them.
+    for tc in tool_calls:
+        tool_name = tc.get("tool", "?")
+        inp = tc.get("input", {})
+        out = tc.get("output", tc.get("error", ""))
+        messages.append(ModelResponse(parts=[ToolCallPart(tool_name=tool_name, args=inp)]))
+        messages.append(ModelRequest(parts=[ToolReturnPart(tool_name=tool_name, content=out)]))
+
     return messages
