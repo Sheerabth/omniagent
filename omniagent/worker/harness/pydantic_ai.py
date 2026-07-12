@@ -7,16 +7,20 @@ from typing import Any
 
 from pydantic_ai import Agent, Tool
 from pydantic_ai.messages import (
+    BinaryContent,
+    BinaryImage,
     ModelRequest,
     ModelResponse,
     TextPart,
     ToolCallPart,
     ToolReturnPart,
+    UserContent,
     UserPromptPart,
 )
 
 from omniagent.api.models import FileRef, MessageRecord
 from omniagent.config import settings
+from omniagent.storage import StorageClient
 from omniagent.worker.harness._env import _load_env_file
 from omniagent.worker.harness.base import HarnessAdapter, embed_files, make_monty_executor
 from omniagent.worker.models import EventEmitter, ThinkingEvent, ToolExecutor, ToolSnapshot
@@ -49,6 +53,8 @@ class PydanticAIAdapter(HarnessAdapter):
         model: str = "",
         tool_calls: list[dict[str, Any]] | None = None,
         files: list[FileRef] | None = None,
+        session_id: str = "",
+        storage: StorageClient | None = None,
     ) -> str:
         # Load .env.pydantic every run — edits take effect next job, no restart.
         os.environ.update(_load_env_file(settings.pydantic_env_file))
@@ -79,15 +85,38 @@ class PydanticAIAdapter(HarnessAdapter):
             "",
         )
 
-        # Embed files attached to the current turn.
-        if files:
-            file_text = embed_files(files)
+        # Build user prompt: text + media content blocks for image/audio/video.
+        user_content: list[UserContent] = [latest_user]
+        text_file_refs: list[FileRef] = []
+
+        if files and storage and session_id:
+            for ref in files:
+                ct = ref.content_type.lower()
+                if ct.startswith("image/"):
+                    try:
+                        data = await storage.download(session_id, ref.path)
+                        user_content.append(BinaryImage(data=data, media_type=ref.content_type))
+                    except Exception:
+                        text_file_refs.append(ref)
+                elif ct.startswith("audio/") or ct.startswith("video/"):
+                    try:
+                        data = await storage.download(session_id, ref.path)
+                        user_content.append(BinaryContent(data=data, media_type=ref.content_type))
+                    except Exception:
+                        text_file_refs.append(ref)
+                else:
+                    text_file_refs.append(ref)
+        elif files:
+            text_file_refs = list(files)
+
+        if text_file_refs:
+            file_text = embed_files(text_file_refs)
             if file_text:
-                latest_user = file_text + "\n\n" + latest_user
+                user_content.insert(0, file_text)
 
         await emit_event(ThinkingEvent(content="Starting Pydantic AI agent"))
 
-        result = await agent.run(latest_user, message_history=message_history)
+        result = await agent.run(user_content, message_history=message_history)
         return result.output
 
 

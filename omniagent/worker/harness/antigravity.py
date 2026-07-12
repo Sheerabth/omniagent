@@ -8,7 +8,7 @@ import subprocess
 from contextvars import ContextVar
 from typing import Any, Protocol
 
-from google.antigravity import Agent
+from google.antigravity import Agent, types
 
 try:
     from google.antigravity.connections.local.local_connection_config import LocalAgentConfig
@@ -21,6 +21,7 @@ except ImportError as exc:
 
 from omniagent.api.models import FileRef, MessageRecord
 from omniagent.config import settings
+from omniagent.storage import StorageClient
 from omniagent.worker.harness._env import _load_env_file
 from omniagent.worker.harness.base import HarnessAdapter, embed_files, make_monty_executor
 from omniagent.worker.models import (
@@ -122,6 +123,8 @@ class AntigravityAdapter(HarnessAdapter):
         model: str = "",
         tool_calls: list[dict[str, Any]] | None = None,
         files: list[FileRef] | None = None,
+        session_id: str = "",
+        storage: StorageClient | None = None,
     ) -> str:
         if use_monty:
             tools = [self._build_monty_tool(tool_snapshot, tool_executor, emit_event)]
@@ -144,11 +147,40 @@ class AntigravityAdapter(HarnessAdapter):
             "",
         )
 
-        # Embed files attached to the current turn.
-        if files:
-            file_text = embed_files(files)
+        # Build content: text prompt + media content blocks for image/audio/video.
+        content: list[str | types.Image | types.Audio | types.Video] = [latest_user]
+        text_file_refs: list[FileRef] = []
+
+        if files and storage and session_id:
+            for ref in files:
+                ct = ref.content_type.lower()
+                if ct.startswith("image/"):
+                    try:
+                        data = await storage.download(session_id, ref.path)
+                        content.append(types.Image(data=data, mime_type=ref.content_type))
+                    except Exception:
+                        text_file_refs.append(ref)
+                elif ct.startswith("audio/"):
+                    try:
+                        data = await storage.download(session_id, ref.path)
+                        content.append(types.Audio(data=data, mime_type=ref.content_type))
+                    except Exception:
+                        text_file_refs.append(ref)
+                elif ct.startswith("video/"):
+                    try:
+                        data = await storage.download(session_id, ref.path)
+                        content.append(types.Video(data=data, mime_type=ref.content_type))
+                    except Exception:
+                        text_file_refs.append(ref)
+                else:
+                    text_file_refs.append(ref)
+        elif files:
+            text_file_refs = list(files)
+
+        if text_file_refs:
+            file_text = embed_files(text_file_refs)
             if file_text:
-                latest_user = file_text + "\n\n" + latest_user
+                content.insert(0, file_text)
 
         await emit_event(ThinkingEvent(content="Starting Antigravity agent"))
 
@@ -165,7 +197,7 @@ class AntigravityAdapter(HarnessAdapter):
         _token = _antigravity_env_ctx.set(_build_antigravity_env())
         try:
             async with Agent(config) as agent:
-                response = await agent.chat(latest_user)
+                response = await agent.chat(content)
                 result = await _extract_text(response)
         finally:
             _antigravity_env_ctx.reset(_token)

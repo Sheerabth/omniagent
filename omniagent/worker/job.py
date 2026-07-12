@@ -291,6 +291,8 @@ async def run_agent_job(session_id: str) -> None:
                     model=model,
                     tool_calls=tool_calls,
                     files=current_files or None,
+                    session_id=session_id,
+                    storage=storage,
                 )
                 if generation:
                     _safe_lf(

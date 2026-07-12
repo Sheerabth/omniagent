@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 from typing import Any
 
 from omniagent.api.models import FileRef, MessageRecord
+from omniagent.storage import StorageClient
 from omniagent.worker.models import (
     EventEmitter,
     MontyExecutor,
@@ -104,10 +105,14 @@ class HarnessAdapter(ABC):
         model: str = "",
         tool_calls: list[dict[str, Any]] | None = None,
         files: list[FileRef] | None = None,
+        session_id: str = "",
+        storage: StorageClient | None = None,
     ) -> str:
         """Run agent loop. Returns final text response.
 
         *files* are FileRefs attached to the current user turn.
-        Model inspects content via native.file_read tool at runtime.
+        Text documents are inspected via native.file_read at runtime.
+        Media files (image/audio/video) are passed as content blocks
+        when *session_id* and *storage* are provided.
         """
         ...

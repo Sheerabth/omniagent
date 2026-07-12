@@ -18,6 +18,7 @@ from mcp.types import Tool as McpTool
 
 from omniagent.api.models import FileRef, MessageRecord
 from omniagent.config import settings
+from omniagent.storage import StorageClient
 from omniagent.worker.harness._env import _load_env_file
 from omniagent.worker.harness.base import (
     EXECUTE_PYTHON_DESCRIPTION,
@@ -55,6 +56,8 @@ class ClaudeAdapter(HarnessAdapter):
         model: str = "",
         tool_calls: list[dict[str, Any]] | None = None,
         files: list[FileRef] | None = None,
+        session_id: str = "",
+        storage: StorageClient | None = None,
     ) -> str:
         mcp_server = _build_mcp_server(
             tool_snapshot,
@@ -87,21 +90,66 @@ class ClaudeAdapter(HarnessAdapter):
 
         prompt = _build_prompt_with_history(history)
 
-        # Embed files attached to the current turn.
-        if files:
-            file_text = embed_files(files)
+        # Split files: text refs keep existing behaviour, media files become content blocks.
+        text_file_refs: list[FileRef] = []
+        media_blocks: list[dict[str, Any]] = []
+
+        if files and storage and session_id:
+            import base64 as _base64
+
+            for ref in files:
+                ct = ref.content_type.lower()
+                if ct.startswith("image/"):
+                    try:
+                        data = await storage.download(session_id, ref.path)
+                        media_blocks.append(
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": ref.content_type,
+                                    "data": _base64.b64encode(data).decode("ascii"),
+                                },
+                            }
+                        )
+                    except Exception:
+                        text_file_refs.append(ref)
+                else:
+                    text_file_refs.append(ref)
+        elif files:
+            text_file_refs = list(files)
+
+        if text_file_refs:
+            file_text = embed_files(text_file_refs)
             if file_text:
                 prompt = prompt + "\n\n" + file_text
+
         await emit_event(ThinkingEvent(content="Starting Claude agent"))
 
         final_text = ""
-        async for message in query(prompt=prompt, options=options):
-            if isinstance(message, ResultMessage):
-                final_text = message.result or final_text
-            elif isinstance(message, AssistantMessage):
-                for block in message.content:
-                    if isinstance(block, TextBlock):
-                        final_text = block.text
+        if media_blocks:
+            # Use AsyncIterable[dict] path for multimodal content.
+            async def _multimodal_prompt():
+                yield {
+                    "role": "user",
+                    "content": [{"type": "text", "text": prompt}] + media_blocks,
+                }
+
+            async for message in query(prompt=_multimodal_prompt(), options=options):
+                if isinstance(message, ResultMessage):
+                    final_text = message.result or final_text
+                elif isinstance(message, AssistantMessage):
+                    for block in message.content:
+                        if isinstance(block, TextBlock):
+                            final_text = block.text
+        else:
+            async for message in query(prompt=prompt, options=options):
+                if isinstance(message, ResultMessage):
+                    final_text = message.result or final_text
+                elif isinstance(message, AssistantMessage):
+                    for block in message.content:
+                        if isinstance(block, TextBlock):
+                            final_text = block.text
 
         return final_text
 
