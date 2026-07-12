@@ -202,8 +202,9 @@ class StorageClient:
     ) -> str:
         """Read file with surgical extraction params.
 
-        Returns extracted text for documents, base64 for unsupported binary.
-        offset/limit/tail/grep: surgical line-based extraction for text files.
+        Text files return text; documents are converted to Markdown via MarkItDown.
+        Unsupported binary formats return base64.
+        offset/limit/tail/grep apply to all text output (including converted documents).
         """
         data = await self.download(session_id, path)
         content_type = "application/octet-stream"
@@ -222,17 +223,22 @@ class StorageClient:
             "application/x-yaml",
         )
 
-        if not is_text:
-            # Server-side extraction for common document formats.
-            extracted = _extract_document(data, content_type, path)
+        if is_text:
+            text = data.decode("utf-8", errors="replace")
+        else:
+            extracted = _extract_via_markitdown(data, path)
             if extracted is not None:
-                return extracted
-
-            import base64
-
-            return base64.b64encode(data).decode("ascii")
-
-        text = data.decode("utf-8", errors="replace")
+                text = extracted
+            else:
+                size_mb = len(data) / (1024 * 1024)
+                ext = f" (.{path.rsplit('.', 1)[-1]})" if "." in path else ""
+                return (
+                    f"[Unsupported binary format: {content_type}{ext}"
+                    f" — {size_mb:.1f}MB]\n\n"
+                    "This file type cannot be displayed as text. "
+                    "Supported formats: PDF, DOCX, XLSX, PPTX, EPUB, HTML, CSV, "
+                    "JSON, XML, ZIP, and more."
+                )
 
         # Apply surgical params
         lines = text.split("\n")
@@ -263,72 +269,22 @@ class StorageClient:
         return result
 
 
-# ── Document extraction helpers ───────────────────────────────────────────
+# ── Document extraction (MarkItDown) ──────────────────────────────────────
 
 
-def _extract_document(data: bytes, content_type: str, path: str) -> str | None:
-    """Extract text from common document formats. Returns None if unsupported."""
+def _extract_via_markitdown(data: bytes, path: str) -> str | None:
+    """Convert document to Markdown via MarkItDown. Returns None if unsupported/corrupt."""
+    import io
+
+    from markitdown import MarkItDown
+
     ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
+    if not ext:
+        return None
 
-    if content_type == "application/pdf" or ext == "pdf":
-        return _extract_pdf(data)
-
-    if content_type in (
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "application/msword",
-    ) or ext in ("docx", "doc"):
-        return _extract_docx(data)
-
-    if content_type in (
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        "application/vnd.ms-excel",
-    ) or ext in ("xlsx", "xls"):
-        return _extract_xlsx(data)
-
-    return None
-
-
-def _extract_pdf(data: bytes) -> str:
-    """Extract text from PDF using pypdf."""
-    import io
-
-    from pypdf import PdfReader
-
-    reader = PdfReader(io.BytesIO(data))
-    parts: list[str] = []
-    for i, page in enumerate(reader.pages):
-        text = page.extract_text()
-        if text:
-            parts.append(f"--- Page {i + 1} ---\n{text}")
-    return "\n\n".join(parts) if parts else "[PDF contains no extractable text]"
-
-
-def _extract_docx(data: bytes) -> str:
-    """Extract text from DOCX using python-docx."""
-    import io
-
-    from docx import Document
-
-    doc = Document(io.BytesIO(data))
-    parts: list[str] = []
-    for para in doc.paragraphs:
-        if para.text.strip():
-            parts.append(para.text)
-    return "\n".join(parts) if parts else "[DOCX contains no extractable text]"
-
-
-def _extract_xlsx(data: bytes) -> str:
-    """Extract text from XLSX using openpyxl — renders as CSV-like text."""
-    import io
-
-    from openpyxl import load_workbook
-
-    wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
-    parts: list[str] = []
-    for sheet_name in wb.sheetnames:
-        ws = wb[sheet_name]
-        parts.append(f"--- Sheet: {sheet_name} ---")
-        for row in ws.iter_rows(values_only=True):
-            parts.append(",".join(str(cell) if cell is not None else "" for cell in row))
-    wb.close()
-    return "\n".join(parts) if parts else "[XLSX contains no data]"
+    try:
+        result = MarkItDown().convert(io.BytesIO(data), file_extension=f".{ext}")
+        text = result.text_content
+        return text if text and text.strip() else None
+    except Exception:
+        return None

@@ -51,7 +51,9 @@ NATIVE_TOOL_DESCRIPTIONS: dict[str, str] = {
     "native.file_read": (
         "Read a file from session storage. Use offset/limit (head), tail (last N lines), "
         "or grep (lines containing substring) to extract exactly what you need. "
-        "Text files return text; binary files return base64. "
+        "Text files return text; documents (PDF, DOCX, XLSX, PPTX, EPUB, HTML, CSV, JSON, "
+        "XML, ZIP, and more) are converted to Markdown automatically. "
+        "Unsupported binary formats return an error with format details. "
         "Capped at 10MB / 50000 lines — use surgical params to avoid truncation."
     ),
     "native.file_write": (

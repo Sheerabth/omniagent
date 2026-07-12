@@ -32,12 +32,10 @@ dependencies = [
     "prometheus-client",
     # tracing
     "langfuse",
-    "sqlalchemy[asyncio]>=2.0.51",
-    "pydantic-ai>=2.9.0",
-    "minio>=7.2.20",
-    "pypdf>=6.14.2",
-    "python-docx>=1.2.0",
-    "openpyxl>=3.1.5",
+    "sqlalchemy[asyncio]",
+    "pydantic-ai",
+    "minio",
+    "markitdown[pdf,docx,pptx,xlsx]",
 ]
 
 [project.optional-dependencies]
@@ -67,7 +65,7 @@ dev = [
     "isort",
     "ruff",
     "pre-commit",
-    "pyright>=1.1.411",
+    "pyright",
 ]
 
 [tool.black]
